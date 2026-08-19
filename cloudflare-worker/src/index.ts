@@ -151,7 +151,7 @@ export class Device extends DurableObject<Env> {
               data: JSON.stringify({
                 title: "Rune",
                 body: reminder.title,
-                url: "/Rune/",
+                url: "/",
               }),
               options: { ttl: 60 * 60, urgency: "high" },
             },

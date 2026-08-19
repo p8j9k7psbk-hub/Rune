@@ -5,9 +5,9 @@
   "compatibility_date": "2026-07-30",
   "compatibility_flags": ["nodejs_compat"],
   "vars": {
-    "ALLOWED_ORIGIN": "https://p8j9k7psbk-hub.github.io",
+    "ALLOWED_ORIGIN": "https://rune.r-vera.com",
     "VAPID_PUBLIC_KEY": "BCaX6eNFICDhsGzoV-gml_5UD9Hv7azHDTBH_rEzgOCTH8RCu33gofqbcJr_9QgPgrMlU0ef7YGhiupcdlsG-Y8",
-    "VAPID_SUBJECT": "https://p8j9k7psbk-hub.github.io/Rune/"
+    "VAPID_SUBJECT": "https://rune.r-vera.com/"
   },
   "durable_objects": {
     "bindings": [

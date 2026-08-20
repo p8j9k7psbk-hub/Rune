@@ -13,7 +13,8 @@ type Todo = { id: number; text: string; meta: string; done: boolean };
 type ClaudeModel = { id: string; display_name: string; created_at?: string };
 type ChatAttachment = { id: number; name: string; kind: "image" | "text"; mediaType: string; data: string };
 type ToolTrace = { name: string; server?: string; input?: unknown; output?: unknown; status: "完成" | "失败" | "等待确认" };
-type ChatMessage = { role: "user" | "assistant"; text: string; attachments?: ChatAttachment[]; voice?: boolean; reasoning?: string; toolTraces?: ToolTrace[] };
+type TokenUsage = { input: number; output: number; total: number };
+type ChatMessage = { role: "user" | "assistant"; text: string; attachments?: ChatAttachment[]; voice?: boolean; reasoning?: string; toolTraces?: ToolTrace[]; usage?: TokenUsage };
 type RuneAction = { id: string; name: "add_todo" | "write_diary" | "set_home_message" | "create_reminder"; input: Record<string, string>; status: "pending" | "done" | "cancelled" };
 type Profile = {
   name: string;         // Rune 的昵称
@@ -583,6 +584,7 @@ function DiaryView({ profile }: { profile: Profile }) {
   const [todosByDate, setTodosByDate] = useState<Record<string, Todo[]>>({ [todayKey]: initialTodos });
   const [newTodo, setNewTodo] = useState("");
   const [diaryByDate, setDiaryByDate] = useState<Record<string, string>>({});
+  const [runeDiaryByDate, setRuneDiaryByDate] = useState<Record<string, string>>({});
   const [editingDiary, setEditingDiary] = useState(false);
   const [diaryDraft, setDiaryDraft] = useState("");
   const selectedKey = localDateKey(selectedDate);
@@ -627,6 +629,17 @@ function DiaryView({ profile }: { profile: Profile }) {
     if (typeof globalThis.document === "undefined") return;
     localStorage.setItem("pulse-diary-entries", JSON.stringify(diaryByDate));
   }, [diaryByDate]);
+
+  useEffect(() => {
+    if (typeof globalThis.document === "undefined") return;
+    const stored = localStorage.getItem("pulse-rune-diary-entries");
+    if (stored) setRuneDiaryByDate(JSON.parse(stored));
+  }, []);
+
+  useEffect(() => {
+    if (typeof globalThis.document === "undefined") return;
+    localStorage.setItem("pulse-rune-diary-entries", JSON.stringify(runeDiaryByDate));
+  }, [runeDiaryByDate]);
 
   useEffect(() => {
     setDiaryDraft(diaryByDate[selectedKey] || "");
@@ -710,10 +723,10 @@ function DiaryView({ profile }: { profile: Profile }) {
             </div>
           </div>
         ) : (
-          <p className={(mode === "rune" || !diaryByDate[selectedKey]) ? "empty-entry" : ""}>
+          <p className={!(mode === "mine" ? diaryByDate[selectedKey] : runeDiaryByDate[selectedKey]) ? "empty-entry" : ""}>
             {mode === "mine"
               ? diaryByDate[selectedKey] || "这一天还没有写日记。"
-              : "Rune 视角的日记还没有接上对话，先去 Chats 和 Rune 聊聊。"}
+              : runeDiaryByDate[selectedKey] || `${profile.name || "Rune"} 这一天还没有写日记。`}
           </p>
         )}
       </article>
@@ -1185,9 +1198,10 @@ function ChatView({
       localStorage.setItem("pulse-diary-todos", JSON.stringify(all));
     }
     if (action.name === "write_diary") {
-      const all = JSON.parse(localStorage.getItem("pulse-diary-entries") || "{}") as Record<string, string>;
+      const storageKey = action.input.owner === "rune" ? "pulse-rune-diary-entries" : "pulse-diary-entries";
+      const all = JSON.parse(localStorage.getItem(storageKey) || "{}") as Record<string, string>;
       all[date] = action.input.content || "";
-      localStorage.setItem("pulse-diary-entries", JSON.stringify(all));
+      localStorage.setItem(storageKey, JSON.stringify(all));
     }
     if (action.name === "set_home_message") setHomeMessage(action.input.message || "今天也辛苦了。");
     if (action.name === "create_reminder") {
@@ -1230,7 +1244,7 @@ function ChatView({
       const enabledMcp = mcpServers.filter((server) => server.enabled && /^https:\/\//.test(server.url));
       const runeTools = [
         { name: "add_todo", description: "在 Rune Diary 的指定日期添加待办。任何写入都必须先向用户展示确认。", input_schema: { type: "object", properties: { date: { type: "string", description: "YYYY-MM-DD" }, text: { type: "string" } }, required: ["date", "text"] } },
-        { name: "write_diary", description: "在 Rune Diary 的指定日期写入日记。任何写入都必须先向用户展示确认。", input_schema: { type: "object", properties: { date: { type: "string", description: "YYYY-MM-DD" }, content: { type: "string" } }, required: ["date", "content"] } },
+        { name: "write_diary", description: "在 Rune Diary 写日记。必须判断是在写用户自己的日记，还是 Rune/Agent 第一人称的日记，并通过 owner 区分。任何写入都必须先确认。", input_schema: { type: "object", properties: { owner: { type: "string", enum: ["user", "rune"], description: "user=用户的日记；rune=Rune/Agent 的日记" }, date: { type: "string", description: "YYYY-MM-DD" }, content: { type: "string" } }, required: ["owner", "date", "content"] } },
         { name: "set_home_message", description: "修改 Rune 首页顶部的主要问候文字。", input_schema: { type: "object", properties: { message: { type: "string" } }, required: ["message"] } },
         { name: "create_reminder", description: "创建 Rune 定时提醒。根据对话语气自行编辑简洁自然的通知标题与正文。", input_schema: { type: "object", properties: { title: { type: "string", description: "简短通知标题" }, content: { type: "string", description: "由你编辑的通知正文" }, datetime: { type: "string", description: "带时区的 ISO 8601 时间" } }, required: ["title", "content", "datetime"] } },
       ];
@@ -1302,6 +1316,9 @@ ${voiceReady ? "当这句话情绪比较浓、更适合说出来而不是打字�
       });
       let data = await response.json();
       if (!response.ok) throw new Error(data?.error?.message || "AI API 请求失败");
+      const usage: TokenUsage = protocol === "anthropic"
+        ? { input: Number(data.usage?.input_tokens || 0), output: Number(data.usage?.output_tokens || 0), total: Number(data.usage?.input_tokens || 0) + Number(data.usage?.output_tokens || 0) }
+        : { input: Number(data.usage?.prompt_tokens || 0), output: Number(data.usage?.completion_tokens || 0), total: Number(data.usage?.total_tokens || 0) };
       const toolTraces: ToolTrace[] = [];
       let reasoning = "";
       if (protocol === "openai") {
@@ -1331,6 +1348,9 @@ ${voiceReady ? "当这句话情绪比较浓、更适合说出来而不是打字�
           });
           data = await followup.json();
           if (!followup.ok) throw new Error(data?.error?.message || "MCP 结果回传模型失败");
+          usage.input += Number(data.usage?.prompt_tokens || 0);
+          usage.output += Number(data.usage?.completion_tokens || 0);
+          usage.total = usage.input + usage.output;
           const followupMessage = data.choices?.[0]?.message;
           reasoning = String(followupMessage?.reasoning_content || followupMessage?.reasoning || reasoning).trim();
         }
@@ -1360,7 +1380,7 @@ ${voiceReady ? "当这句话情绪比较浓、更适合说出来而不是打字�
       const spoken = reply.replace(VOICE_MARK, "").trim();
       const finalReply = spoken || reply || (proposed.length ? "我准备执行下面的操作，请你确认。" : "我在。");
       const replyIndex = nextMessages.length;
-      messagesRef.current = [...nextMessages, { role: "assistant", text: finalReply, voice: wantsVoice && voiceReady, reasoning: reasoning || undefined, toolTraces: toolTraces.length ? toolTraces : undefined }];
+      messagesRef.current = [...nextMessages, { role: "assistant", text: finalReply, voice: wantsVoice && voiceReady, reasoning: reasoning || undefined, toolTraces: toolTraces.length ? toolTraces : undefined, usage: usage.total ? usage : undefined }];
       setMessages(messagesRef.current);
       // 首页那张卡片跟着对话走：每次回复都同步过去，附带时间戳。
       if (finalReply) setHomeMessage(finalReply);
@@ -1495,6 +1515,9 @@ ${voiceReady ? "当这句话情绪比较浓、更适合说出来而不是打字�
                     </section>
                   ))}
                 </details>
+              )}
+              {message.role === "assistant" && message.usage && (
+                <small className="message-usage">{message.usage.total.toLocaleString()} tokens</small>
               )}
             </div>
           </article>
@@ -2184,6 +2207,24 @@ export default function Pulse() {
   }, []);
 
   useEffect(() => {
+    if (typeof window === "undefined" || !window.visualViewport) return;
+    const viewport = window.visualViewport;
+    const updateKeyboardCover = () => {
+      const layoutHeight = Math.max(window.innerHeight, document.documentElement.clientHeight);
+      const covered = Math.max(0, layoutHeight - viewport.height - viewport.offsetTop);
+      document.documentElement.style.setProperty("--keyboard-cover", `${covered}px`);
+    };
+    updateKeyboardCover();
+    viewport.addEventListener("resize", updateKeyboardCover);
+    viewport.addEventListener("scroll", updateKeyboardCover);
+    return () => {
+      viewport.removeEventListener("resize", updateKeyboardCover);
+      viewport.removeEventListener("scroll", updateKeyboardCover);
+      document.documentElement.style.removeProperty("--keyboard-cover");
+    };
+  }, []);
+
+  useEffect(() => {
     if (typeof globalThis.document === "undefined") return;
     try {
       const stored = localStorage.getItem("pulse-preferences");
@@ -2270,7 +2311,9 @@ export default function Pulse() {
       <div className="phone-shell">
         <div className="status-spacer" />
         {tab === "home" && <HomeView goDiary={() => setTab("diary")} goChat={() => setTab("chat")} goSettings={() => setTab("settings")} anniversaries={anniversaries} health={health} metDate={metDate} homeMessage={homeMessage} homeMessageAt={homeMessageAt} profile={profile} />}
-        {tab === "chat" && <ChatView aiApiBase={aiApiBase} claudeKey={claudeKey} claudeModel={claudeModel} claudeModels={claudeModels} setClaudeModel={setClaudeModel} goSettings={() => setTab("settings")} mcpServers={mcpServers} setHomeMessage={updateHomeMessage} profile={profile} voiceConfig={voiceConfig} minimaxKey={minimaxKey} />}
+        <div className="persistent-chat-panel" hidden={tab !== "chat"}>
+          <ChatView aiApiBase={aiApiBase} claudeKey={claudeKey} claudeModel={claudeModel} claudeModels={claudeModels} setClaudeModel={setClaudeModel} goSettings={() => setTab("settings")} mcpServers={mcpServers} setHomeMessage={updateHomeMessage} profile={profile} voiceConfig={voiceConfig} minimaxKey={minimaxKey} />
+        </div>
         {tab === "diary" && <DiaryView profile={profile} />}
         {tab === "settings" && <SettingsView aiApiBase={aiApiBase} setAiApiBase={setAiApiBase} theme={theme} setTheme={setTheme} anniversaries={anniversaries} setAnniversaries={setAnniversaries} health={health} setHealth={setHealth} mcpServers={mcpServers} setMcpServers={setMcpServers} metDate={metDate} setMetDate={setMetDate} claudeKey={claudeKey} setClaudeKey={setClaudeKey} claudeModel={claudeModel} setClaudeModel={setClaudeModel} claudeModels={claudeModels} setClaudeModels={setClaudeModels} profile={profile} setProfile={setProfile} voiceConfig={voiceConfig} setVoiceConfig={setVoiceConfig} minimaxKey={minimaxKey} setMinimaxKey={setMinimaxKey} />}
 

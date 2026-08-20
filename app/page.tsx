@@ -688,6 +688,7 @@ function ChatView({
   const [showHistory, setShowHistory] = useState(false);
   const hydrated = useRef(false);
   const attachmentRef = useRef<HTMLInputElement>(null);
+  const messageStreamRef = useRef<HTMLElement>(null);
 
   // ── 语音 ───────────────────────────────────────────────
   const [listening, setListening] = useState(false);
@@ -710,6 +711,12 @@ function ChatView({
   useEffect(() => {
     messagesRef.current = messages;
   }, [messages]);
+
+  useEffect(() => {
+    const stream = messageStreamRef.current;
+    if (!stream) return;
+    stream.scrollTo({ top: stream.scrollHeight, behavior: messages.length > 1 ? "smooth" : "auto" });
+  }, [messages, sending]);
 
   useEffect(() => {
     if (typeof globalThis.location === "undefined") return;
@@ -1238,7 +1245,7 @@ ${voiceReady ? "当这句话情绪比较浓、更适合说出来而不是打字�
 
       <header className="claude-chat-header">
         <span className="claude-mini-mark">{profile.avatar ? <img src={profile.avatar} alt="" /> : <img src="./pulse-icon-claude.png" alt="" />}</span>
-        <div><strong>{profile.name || "Rune"}</strong><small>{selectedModel?.display_name || claudeModel || "尚未连接模型"}</small></div>
+        <div><strong>{profile.name || "Rune"}</strong></div>
         {(
           <button className="voice-call-button call-button" onClick={startCall} aria-label={`和 ${profile.name || "Rune"} 语音通话`} title="语音通话"><PhoneIcon /></button>
         )}
@@ -1267,13 +1274,7 @@ ${voiceReady ? "当这句话情绪比较浓、更适合说出来而不是打字�
         </section>
       )}
 
-      {claudeModels.length > 0 && (
-        <select className="chat-model-select" value={claudeModel} onChange={(event) => setClaudeModel(event.target.value)} aria-label="当前 Claude 模型">
-          {claudeModels.map((model) => <option key={model.id} value={model.id}>{model.display_name || model.id}</option>)}
-        </select>
-      )}
-
-      <section className={messages.length ? "claude-message-stream" : "claude-message-stream empty"} aria-label={`与 ${profile.name || "Rune"} 的对话`}>
+      <section ref={messageStreamRef} className={messages.length ? "claude-message-stream" : "claude-message-stream empty"} aria-label={`与 ${profile.name || "Rune"} 的对话`}>
         {!messages.length && (
           <div className="claude-welcome">
             {profile.avatar ? <img className="welcome-avatar" src={profile.avatar} alt="" /> : <img src="./pulse-icon-claude.png" alt="" />}
@@ -1349,7 +1350,7 @@ ${voiceReady ? "当这句话情绪比较浓、更适合说出来而不是打字�
           }}
           placeholder={`和 ${profile.name || "Rune"} 说点什么…`}
           aria-label="消息内容"
-          rows={2}
+          rows={1}
         />
         <input ref={attachmentRef} className="hidden-file" type="file" multiple accept="image/*,.txt,.md,.json,.csv,text/*" onChange={(event) => addAttachments(event.target.files)} />
         <div>
@@ -1361,7 +1362,11 @@ ${voiceReady ? "当这句话情绪比较浓、更适合说出来而不是打字�
               aria-label={listening ? "停止录音并发送" : "按住说话"}
             >{listening ? <span className="recording-stop" /> : <MicrophoneIcon />}</button>
           )}
-          <small>{listening ? (liveTranscript || "在听…") : (selectedModel?.display_name || "AI")}</small>
+          {listening ? <small>{liveTranscript || "在听…"}</small> : claudeModels.length > 0 ? (
+            <select className="chat-model-select" value={claudeModel} onChange={(event) => setClaudeModel(event.target.value)} aria-label="当前模型">
+              {claudeModels.map((model) => <option key={model.id} value={model.id}>{model.display_name || model.id}</option>)}
+            </select>
+          ) : <small>{selectedModel?.display_name || "AI"}</small>}
           <button className="send-button" onClick={() => sendMessage()} disabled={(!input.trim() && !attachments.length) || sending} aria-label="发送消息">↑</button>
         </div>
       </div>

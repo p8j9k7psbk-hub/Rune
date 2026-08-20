@@ -16,6 +16,7 @@ type ToolTrace = { name: string; server?: string; input?: unknown; output?: unkn
 type TokenUsage = { input: number; output: number; total: number };
 type ChatMessage = { role: "user" | "assistant"; text: string; attachments?: ChatAttachment[]; voice?: boolean; reasoning?: string; toolTraces?: ToolTrace[]; usage?: TokenUsage };
 type RuneAction = { id: string; name: "add_todo" | "write_diary" | "set_home_message" | "create_reminder"; input: Record<string, string>; status: "pending" | "done" | "cancelled" };
+type RuneSurface = { mode: "call" | "alarm" | "reminder"; title: string; content: string };
 type Profile = {
   name: string;         // Rune 的昵称
   avatar: string;       // Rune 的头像，dataURL；留空则显示昵称首字
@@ -1224,7 +1225,7 @@ function ChatView({
         const response = await fetch(`${runeApiBase()}/api/reminders`, {
           method: "POST",
           headers: { "content-type": "application/json", "x-rune-device": deviceId, "x-rune-token": deviceToken },
-          body: JSON.stringify({ title: action.input.title || "提醒", content: action.input.content || action.input.title || "你有一个新的提醒。", scheduledAt: action.input.datetime, runeName: profile.name || "Rune", runeAvatar: profile.avatar || "", barkServer: localStorage.getItem("rune-bark-server") || "", barkKey: localStorage.getItem("rune-bark-key") || "" }),
+          body: JSON.stringify({ title: action.input.title || "提醒", content: action.input.content || action.input.title || "你有一个新的提醒。", scheduledAt: action.input.datetime, mode: action.input.mode || "reminder", appUrl: location.origin, runeName: profile.name || "Rune", runeAvatar: profile.avatar || "", barkServer: localStorage.getItem("rune-bark-server") || "", barkKey: localStorage.getItem("rune-bark-key") || "" }),
         });
         if (!response.ok) throw new Error(`提醒已保存在本机，但后台同步失败（HTTP ${response.status}）。`);
       }
@@ -1257,7 +1258,7 @@ function ChatView({
         { name: "add_todo", description: "在 Rune Diary 的指定日期添加待办。任何写入都必须先向用户展示确认。", input_schema: { type: "object", properties: { date: { type: "string", description: "YYYY-MM-DD" }, text: { type: "string" } }, required: ["date", "text"] } },
         { name: "write_diary", description: "在 Rune Diary 写日记。必须判断是在写用户自己的日记，还是 Rune/Agent 第一人称的日记，并通过 owner 区分。任何写入都必须先确认。", input_schema: { type: "object", properties: { owner: { type: "string", enum: ["user", "rune"], description: "user=用户的日记；rune=Rune/Agent 的日记" }, date: { type: "string", description: "YYYY-MM-DD" }, content: { type: "string" } }, required: ["owner", "date", "content"] } },
         { name: "set_home_message", description: "修改 Rune 首页顶部的主要问候文字。", input_schema: { type: "object", properties: { message: { type: "string" } }, required: ["message"] } },
-        { name: "create_reminder", description: "创建 Rune 定时提醒。根据对话语气自行编辑简洁自然的通知标题与正文。", input_schema: { type: "object", properties: { title: { type: "string", description: "简短通知标题" }, content: { type: "string", description: "由你编辑的通知正文" }, datetime: { type: "string", description: "带时区的 ISO 8601 时间" } }, required: ["title", "content", "datetime"] } },
+        { name: "create_reminder", description: "创建 Rune 定时提醒、闹铃或模拟来电。根据用户意图选择 mode，并编辑自然的标题与正文。", input_schema: { type: "object", properties: { mode: { type: "string", enum: ["reminder", "alarm", "call"], description: "普通提醒、持续响铃闹钟、或 Rune 模拟来电" }, title: { type: "string", description: "简短通知标题" }, content: { type: "string", description: "由你编辑的通知正文" }, datetime: { type: "string", description: "带时区的 ISO 8601 时间" } }, required: ["mode", "title", "content", "datetime"] } },
       ];
       const apiBase = normalizeAiApiBase(aiApiBase);
       const protocol = apiProtocolFor(apiBase);
@@ -2183,6 +2184,20 @@ function NavIcon({ name }: { name: "home" | "chat" | "diary" | "settings" }) {
   return <svg {...common}><circle cx="12" cy="12" r="3.1"/><path d="m19.2 13.4 1.3 1-.2 1.6-1.6.7-.8 1.3.2 1.7-1.5.8-1.3-1.1-1.5.3-.9 1.4h-1.8l-.9-1.4-1.5-.3-1.3 1.1-1.5-.8.2-1.7-.8-1.3-1.6-.7-.2-1.6 1.3-1v-1.6l-1.3-1 .2-1.6 1.6-.7.8-1.3-.2-1.7 1.5-.8 1.3 1.1 1.5-.3.9-1.4h1.8l.9 1.4 1.5.3 1.3-1.1 1.5.8-.2 1.7.8 1.3 1.6.7.2 1.6-1.3 1Z"/></svg>;
 }
 
+function RuneIsland({ surface, profile, onDismiss, onOpenChat }: { surface: RuneSurface; profile: Profile; onDismiss: () => void; onOpenChat: () => void }) {
+  const isCall = surface.mode === "call";
+  return (
+    <aside className={`rune-island ${surface.mode}`} role="dialog" aria-label={isCall ? "Rune 来电" : "Rune 闹铃"}>
+      <span className="rune-island-avatar">{profile.avatar ? <img src={profile.avatar} alt="" /> : initialOf(profile.name, "R")}</span>
+      <span className="rune-island-copy"><small>{isCall ? "Rune 来电" : surface.mode === "alarm" ? "闹铃" : "提醒"}</small><strong>{surface.title}</strong><em>{surface.content}</em></span>
+      <span className="rune-island-actions">
+        <button className="dismiss" onClick={onDismiss} aria-label={isCall ? "拒绝" : "停止"}>{isCall ? "×" : "停止"}</button>
+        <button className="accept" onClick={onOpenChat} aria-label={isCall ? "接听" : "打开 Rune"}>{isCall ? <PhoneIcon /> : "打开"}</button>
+      </span>
+    </aside>
+  );
+}
+
 export default function Pulse() {
   const [tab, setTab] = useState<Tab>("home");
   const [theme, setTheme] = useState<ThemeName>("paper");
@@ -2200,6 +2215,7 @@ export default function Pulse() {
   const [homeMessage, setHomeMessage] = useState("今天也辛苦了。");
   const [homeMessageAt, setHomeMessageAt] = useState<number | null>(null);
   const [hydrated, setHydrated] = useState(false);
+  const [surface, setSurface] = useState<RuneSurface | null>(null);
   const updateHomeMessage = (message: string) => {
     setHomeMessage(message);
     setHomeMessageAt(Date.now());
@@ -2295,9 +2311,16 @@ export default function Pulse() {
     if (!hydrated || typeof location === "undefined") return;
     const params = new URLSearchParams(location.search);
     const code = params.get("code");
+    const surfaceMode = params.get("rune_surface");
+    if (surfaceMode === "call" || surfaceMode === "alarm" || surfaceMode === "reminder") {
+      setSurface({ mode: surfaceMode, title: params.get("title") || (surfaceMode === "call" ? `${profile.name || "Rune"} 正在呼叫` : "Rune 提醒"), content: params.get("content") || "点开看看吧。" });
+      history.replaceState({}, "", location.pathname);
+      return;
+    }
     const returnedState = params.get("state");
     const pendingRaw = localStorage.getItem("rune-mcp-oauth-pending");
     if (!code || !pendingRaw) return;
+    setTab("settings");
     const pending = JSON.parse(pendingRaw) as { serverId: number; verifier: string; state: string; redirectUri: string; tokenEndpoint: string; clientId: string };
     if (!returnedState || returnedState !== pending.state) return;
     const tokenBody = new URLSearchParams({ grant_type: "authorization_code", code, client_id: pending.clientId, redirect_uri: pending.redirectUri, code_verifier: pending.verifier }).toString();
@@ -2329,6 +2352,7 @@ export default function Pulse() {
       <div className="ambient two" />
       <div className="phone-shell">
         <div className="status-spacer" />
+        {surface && <RuneIsland surface={surface} profile={profile} onDismiss={() => setSurface(null)} onOpenChat={() => { setSurface(null); setTab("chat"); }} />}
         {tab === "home" && <HomeView goDiary={() => setTab("diary")} goChat={() => setTab("chat")} goSettings={() => setTab("settings")} anniversaries={anniversaries} health={health} metDate={metDate} homeMessage={homeMessage} homeMessageAt={homeMessageAt} profile={profile} />}
         <div className="persistent-chat-panel" hidden={tab !== "chat"}>
           <ChatView aiApiBase={aiApiBase} claudeKey={claudeKey} claudeModel={claudeModel} claudeModels={claudeModels} setClaudeModel={setClaudeModel} goSettings={() => setTab("settings")} mcpServers={mcpServers} setHomeMessage={updateHomeMessage} profile={profile} voiceConfig={voiceConfig} minimaxKey={minimaxKey} />

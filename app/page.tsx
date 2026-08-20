@@ -678,6 +678,7 @@ function ChatView({
 }) {
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const messagesRef = useRef<ChatMessage[]>([]);
   const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
   const [sending, setSending] = useState(false);
   const [chatNotice, setChatNotice] = useState("");
@@ -705,6 +706,10 @@ function ChatView({
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const callActiveRef = useRef(false);
   const voiceReady = Boolean(minimaxKey && voiceConfig.voiceId);
+
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
 
   useEffect(() => {
     if (typeof globalThis.location === "undefined") return;
@@ -791,6 +796,12 @@ function ChatView({
     recognition.interimResults = true;
     recognitionRef.current = recognition;
     let finalText = "";
+    let settled = false;
+    const finish = (text: string) => {
+      if (settled) return;
+      settled = true;
+      resolve(text.trim());
+    };
     recognition.onresult = (event) => {
       let interim = "";
       for (let i = event.resultIndex; i < event.results.length; i += 1) {
@@ -803,17 +814,25 @@ function ChatView({
     recognition.onerror = (event) => {
       recognitionRef.current = null;
       setListening(false);
-      if (event.error === "no-speech" || event.error === "aborted") { resolve(finalText.trim()); return; }
+      if (event.error === "no-speech" || event.error === "aborted") { finish(finalText); return; }
+      settled = true;
       reject(new Error(event.error === "not-allowed" ? "麦克风权限被拒绝了。" : `语音识别出错：${event.error}`));
     };
     recognition.onend = () => {
       recognitionRef.current = null;
       setListening(false);
-      resolve(finalText.trim());
+      finish(finalText);
     };
     setListening(true);
     setLiveTranscript("");
-    recognition.start();
+    try {
+      recognition.start();
+    } catch (error) {
+      recognitionRef.current = null;
+      setListening(false);
+      settled = true;
+      reject(error instanceof Error ? error : new Error("语音识别启动失败。"));
+    }
   });
 
   const stopListening = () => {
@@ -837,6 +856,7 @@ function ChatView({
 
   // 通话模式：听 → 发 → 朗读 → 再听，循环到挂断
   const runCall = async () => {
+    let retryCount = 0;
     while (callActiveRef.current) {
       try {
         setCallStage("listening");
@@ -844,7 +864,12 @@ function ChatView({
         const said = await listenOnce();
         if (!callActiveRef.current) break;
         setLiveTranscript("");
-        if (!said) continue;   // 没听到就接着听
+        if (!said) {
+          await new Promise((resolve) => globalThis.setTimeout(resolve, 350));
+          continue;
+        }
+        retryCount = 0;
+        setChatNotice("");
 
         setCallStage("thinking");
         const reply = await sendMessage(said);
@@ -854,10 +879,18 @@ function ChatView({
           setCallReply(reply);      // 文字和语音同时出来
           setCallStage("speaking");
           await speak(reply, null);
+          // iPhone 需要一点时间释放扬声器音频会话，再重新占用麦克风。
+          if (callActiveRef.current) await new Promise((resolve) => globalThis.setTimeout(resolve, 550));
         }
       } catch (error) {
-        setChatNotice(error instanceof Error ? error.message : "通话中断。");
-        break;
+        const message = error instanceof Error ? error.message : "语音识别暂时中断。";
+        if (/权限|not-allowed|denied|HTTPS/i.test(message)) {
+          setChatNotice(message);
+          break;
+        }
+        retryCount += 1;
+        setChatNotice(`语音识别暂时中断，正在重试（${retryCount}）…`);
+        await new Promise((resolve) => globalThis.setTimeout(resolve, Math.min(1800, 500 + retryCount * 250)));
       }
     }
     setCallStage("idle");
@@ -1070,13 +1103,15 @@ function ChatView({
     const text = raw;
     if ((!text && !attachments.length) || sending) return "";
     const outgoingAttachments = attachments;
-    const nextMessages: ChatMessage[] = [...messages, { role: "user", text, attachments: outgoingAttachments }];
+    const nextMessages: ChatMessage[] = [...messagesRef.current, { role: "user", text, attachments: outgoingAttachments }];
+    messagesRef.current = nextMessages;
     setMessages(nextMessages);
     setInput("");
     setAttachments([]);
     if (!claudeKey || !claudeModel) {
       const hint = "先去 Settings 连接 AI API 并选择模型，我就可以真正回复你了。";
-      setMessages([...nextMessages, { role: "assistant", text: hint }]);
+      messagesRef.current = [...nextMessages, { role: "assistant", text: hint }];
+      setMessages(messagesRef.current);
       return hint;
     }
 
@@ -1150,7 +1185,8 @@ ${voiceReady ? "当这句话情绪比较浓、更适合说出来而不是打字�
       const spoken = reply.replace(VOICE_MARK, "").trim();
       const finalReply = spoken || reply || (proposed.length ? "我准备执行下面的操作，请你确认。" : "我在。");
       const replyIndex = nextMessages.length;
-      setMessages([...nextMessages, { role: "assistant", text: finalReply, voice: wantsVoice && voiceReady }]);
+      messagesRef.current = [...nextMessages, { role: "assistant", text: finalReply, voice: wantsVoice && voiceReady }];
+      setMessages(messagesRef.current);
       // 首页那张卡片跟着对话走：每次回复都同步过去，附带时间戳。
       if (finalReply) setHomeMessage(finalReply);
       if (proposed.length) setActions((items) => [...items, ...proposed]);
@@ -1163,7 +1199,8 @@ ${voiceReady ? "当这句话情绪比较浓、更适合说出来而不是打字�
       return finalReply;
     } catch (error) {
       const failure = `连接失败：${error instanceof Error ? error.message : "请检查 API Key 和网络。"}`;
-      setMessages([...nextMessages, { role: "assistant", text: failure }]);
+      messagesRef.current = [...nextMessages, { role: "assistant", text: failure }];
+      setMessages(messagesRef.current);
       return failure;
     } finally {
       setSending(false);

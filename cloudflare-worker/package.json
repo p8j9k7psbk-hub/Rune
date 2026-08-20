@@ -2,15 +2,7 @@
   "name": "rune-cloudflare-push",
   "private": true,
   "type": "module",
-  "scripts": {
-    "deploy": "wrangler deploy",
-    "dev": "wrangler dev",
-    "typecheck": "tsc --noEmit"
-  },
-  "dependencies": {
-    "@block65/webcrypto-web-push": "^1.0.2"
-  },
-  "devDependencies": {
-    "wrangler": "^4.26.1"
-  }
+  "scripts": { "deploy": "wrangler deploy", "dev": "wrangler dev", "typecheck": "tsc --noEmit" },
+  "dependencies": { "@block65/webcrypto-web-push": "^1.0.2" },
+  "devDependencies": { "wrangler": "^4.92.0", "typescript": "^5.9.2" }
 }

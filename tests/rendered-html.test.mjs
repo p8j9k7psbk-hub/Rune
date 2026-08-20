@@ -53,6 +53,9 @@ test("keeps required AI, voice, and mobile behavior", async () => {
   assert.match(page, /"mic-button recording"/);
   assert.match(page, /runVoiceChecks/);
   assert.match(page, /requestMicrophonePermission/);
+  assert.match(page, /messagesRef\.current/);
+  assert.match(page, /释放扬声器音频会话/);
+  assert.match(page, /正在重试/);
   assert.match(page, /请求权限/);
   assert.match(page, /globalThis\.isSecureContext/);
   assert.match(page, /localStorage\.setItem\("rune-claude-key"/);

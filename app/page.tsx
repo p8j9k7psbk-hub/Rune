@@ -384,12 +384,16 @@ const SAME_ORIGIN_API_HOSTS = ["pulse-private-space.q6r6nrp7qy.chatgpt.site"];
 // cloudflare-worker/ 部署后的地址，作为默认值，开箱即用。
 // 注意 worker 的 ALLOWED_ORIGIN 只认 GitHub Pages 那个域名，
 // 所以本地 localhost 预览会被 CORS 拦掉，属于预期行为。
-const DEFAULT_RUNE_API_BASE = "https://rune-push.che061029.workers.dev";
+const DEFAULT_RUNE_API_BASE = "https://rune-push.r-vera.com";
 
 function runeApiBase() {
   if (typeof globalThis.location === "undefined") return "";
   if (SAME_ORIGIN_API_HOSTS.includes(globalThis.location.hostname)) return "";
   const stored = localStorage.getItem(RUNE_API_STORAGE_KEY);
+  if (stored?.includes("rune-push.che061029.workers.dev")) {
+    localStorage.setItem(RUNE_API_STORAGE_KEY, DEFAULT_RUNE_API_BASE);
+    return DEFAULT_RUNE_API_BASE;
+  }
   return (stored ?? DEFAULT_RUNE_API_BASE).replace(/\/+$/, "");
 }
 

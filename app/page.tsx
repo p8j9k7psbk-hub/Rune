@@ -1392,6 +1392,7 @@ function SettingsView({
   const voiceReady = Boolean(minimaxKey && voiceConfig.voiceId);
   const [voiceStatus, setVoiceStatus] = useState("");
   const [testingVoice, setTestingVoice] = useState(false);
+  const [requestingMicrophone, setRequestingMicrophone] = useState(false);
   const [runningVoiceChecks, setRunningVoiceChecks] = useState(false);
   const [voiceChecks, setVoiceChecks] = useState({
     microphone: "尚未测试",
@@ -1410,18 +1411,31 @@ function SettingsView({
     }));
   }, []);
 
-  const runVoiceChecks = async () => {
-    setRunningVoiceChecks(true);
-    setVoiceChecks((current) => ({ ...current, microphone: "正在请求…", minimax: "正在调用…" }));
-
+  const requestMicrophonePermission = async () => {
+    setRequestingMicrophone(true);
+    setVoiceChecks((current) => ({ ...current, microphone: "正在请求授权…" }));
     try {
-      if (!navigator.mediaDevices?.getUserMedia) throw new Error("当前页面没有麦克风接口");
+      if (!globalThis.isSecureContext) throw new Error("请先使用安全的 HTTPS 页面打开 Rune");
+      if (!navigator.mediaDevices?.getUserMedia) throw new Error("当前浏览器没有提供麦克风接口");
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       stream.getTracks().forEach((track) => track.stop());
       setVoiceChecks((current) => ({ ...current, microphone: "权限正常" }));
+      return true;
     } catch (error) {
-      setVoiceChecks((current) => ({ ...current, microphone: error instanceof Error ? error.message : "权限不可用" }));
+      const reason = error instanceof DOMException && ["NotAllowedError", "SecurityError"].includes(error.name)
+        ? "权限被拒绝，请到系统设置中允许 Rune 使用麦克风"
+        : error instanceof Error ? error.message : "权限不可用";
+      setVoiceChecks((current) => ({ ...current, microphone: reason }));
+      return false;
+    } finally {
+      setRequestingMicrophone(false);
     }
+  };
+
+  const runVoiceChecks = async () => {
+    setRunningVoiceChecks(true);
+    setVoiceChecks((current) => ({ ...current, minimax: "正在调用…" }));
+    await requestMicrophonePermission();
 
     try {
       const url = await synthesizeSpeech("Rune 语音连接测试。", voiceConfig, minimaxKey);
@@ -1761,9 +1775,9 @@ function SettingsView({
           <option value="https://api.minimax.io/v1/t2a_v2">国际站 platform.minimax.io</option>
         </datalist>
         <div className="capability-check">
-          <div className="capability-check-head"><p className="eyebrow">语音测试</p><button onClick={runVoiceChecks} disabled={runningVoiceChecks}>{runningVoiceChecks ? "测试中…" : "运行测试"}</button></div>
+          <div className="capability-check-head"><p className="eyebrow">语音测试</p><button onClick={runVoiceChecks} disabled={runningVoiceChecks}>{runningVoiceChecks ? "测试中…" : "全部测试"}</button></div>
           <ul>
-            <li><b className={voiceChecks.microphone === "权限正常" ? "ok" : ""}>1</b><span>麦克风权限<small>{voiceChecks.microphone}</small></span></li>
+            <li className="capability-action-row"><b className={voiceChecks.microphone === "权限正常" ? "ok" : ""}>1</b><span>麦克风权限<small>{voiceChecks.microphone}</small></span><button onClick={requestMicrophonePermission} disabled={requestingMicrophone}>{requestingMicrophone ? "请求中…" : "请求权限"}</button></li>
             <li><b className={voiceChecks.minimax === "调用成功" ? "ok" : ""}>2</b><span>MiniMax 可否调用<small>{voiceChecks.minimax}</small></span></li>
             <li><b className="ok">3</b><span>当前打开界面<small>{voiceChecks.surface}</small></span></li>
           </ul>

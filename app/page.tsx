@@ -1694,7 +1694,7 @@ function SettingsView({
           </button>
           <div className="identity-fields">
             <p className="eyebrow">user</p>
-            <input value="user" readOnly placeholder="user" autoComplete="off" aria-label="user 昵称" />
+            <input value={profile.userName} onChange={(event) => updateProfile({ userName: event.target.value })} placeholder="user" autoComplete="off" aria-label="user 昵称" />
           </div>
           {profile.userAvatar && <button className="remove-row" onClick={() => updateProfile({ userAvatar: "" })} aria-label="移除我的头像">×</button>}
         </div>
@@ -1964,7 +1964,8 @@ export default function Pulse() {
         if (data.homeMessage) setHomeMessage(data.homeMessage);
         if (data.homeMessageAt) setHomeMessageAt(data.homeMessageAt);
         if (data.profile) {
-          const storedProfile = { ...defaultProfile, ...data.profile, userName: "user" } as Profile;
+          const storedProfile = { ...defaultProfile, ...data.profile } as Profile;
+          if (!storedProfile.userName || ["沈澈", "kiki"].includes(storedProfile.userName)) storedProfile.userName = "user";
           setProfile(storedProfile);
         }
         if (data.voiceConfig) setVoiceConfig({ ...defaultVoiceConfig, ...data.voiceConfig });

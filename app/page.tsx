@@ -7,7 +7,7 @@ type Tab = "home" | "chat" | "diary" | "settings";
 type ThemeName = "paper" | "sage" | "ink" | "claude";
 type Anniversary = { id: number; name: string; date: string };
 type HealthSummary = { steps?: number; heartRate?: number; importedAt?: string; week?: number[] };
-type McpServer = { id: number; name: string; url: string; enabled: boolean; authMode?: "none" | "oauth"; requiresAuth?: boolean; token?: string; clientId?: string };
+type McpServer = { id: number; name: string; url: string; enabled: boolean; authMode?: "none" | "oauth"; requiresAuth?: boolean; token?: string };
 type McpTool = { name: string; description?: string; inputSchema?: Record<string, unknown> };
 type Todo = { id: number; text: string; meta: string; done: boolean };
 type ClaudeModel = { id: string; display_name: string; created_at?: string };
@@ -121,20 +121,23 @@ function base64Url(bytes: Uint8Array) {
 }
 
 async function startMcpOAuth(server: McpServer) {
-  if (!server.clientId?.trim()) throw new Error("OAuth MCP 需要填写 Client ID。");
   const endpoint = new URL(server.url);
   const metadataUrl = new URL("/.well-known/oauth-authorization-server", endpoint.origin);
   const metadataResponse = await fetch(metadataUrl);
   if (!metadataResponse.ok) throw new Error(`无法读取 OAuth 配置（HTTP ${metadataResponse.status}）`);
   const metadata = await metadataResponse.json();
-  if (!metadata.authorization_endpoint || !metadata.token_endpoint) throw new Error("OAuth 配置缺少授权或 Token 地址。");
+  if (!metadata.authorization_endpoint || !metadata.token_endpoint || !metadata.registration_endpoint) throw new Error("这个 MCP 没有提供可自动跳转的 OAuth 动态注册信息。");
   const verifier = base64Url(crypto.getRandomValues(new Uint8Array(48)));
   const challenge = base64Url(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier))));
   const redirectUri = `${location.origin}${location.pathname}`;
   const state = base64Url(crypto.getRandomValues(new Uint8Array(24)));
-  localStorage.setItem("rune-mcp-oauth-pending", JSON.stringify({ serverId: server.id, verifier, state, redirectUri, tokenEndpoint: metadata.token_endpoint }));
+  const registrationResponse = await fetch(metadata.registration_endpoint, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ client_name: "Rune", redirect_uris: [redirectUri], token_endpoint_auth_method: "none", grant_types: ["authorization_code", "refresh_token"], response_types: ["code"] }) });
+  const registration = await registrationResponse.json();
+  if (!registrationResponse.ok || !registration.client_id) throw new Error(registration.error_description || "OAuth 客户端自动注册失败。");
+  const clientId = String(registration.client_id);
+  localStorage.setItem("rune-mcp-oauth-pending", JSON.stringify({ serverId: server.id, verifier, state, redirectUri, tokenEndpoint: metadata.token_endpoint, clientId }));
   const authorize = new URL(metadata.authorization_endpoint);
-  authorize.search = new URLSearchParams({ response_type: "code", client_id: server.clientId, redirect_uri: redirectUri, code_challenge: challenge, code_challenge_method: "S256", state }).toString();
+  authorize.search = new URLSearchParams({ response_type: "code", client_id: clientId, redirect_uri: redirectUri, code_challenge: challenge, code_challenge_method: "S256", state }).toString();
   location.assign(authorize.href);
 }
 
@@ -388,11 +391,6 @@ function runeApiBase() {
   if (SAME_ORIGIN_API_HOSTS.includes(globalThis.location.hostname)) return "";
   const stored = localStorage.getItem(RUNE_API_STORAGE_KEY);
   return (stored ?? DEFAULT_RUNE_API_BASE).replace(/\/+$/, "");
-}
-
-function runeApiConfigured() {
-  if (typeof globalThis.location === "undefined") return false;
-  return Boolean(runeApiBase()) || SAME_ORIGIN_API_HOSTS.includes(globalThis.location.hostname);
 }
 
 async function syncNotificationProfile(profile: Profile) {
@@ -1593,7 +1591,7 @@ function SettingsView({
   const fileRef = useRef<HTMLInputElement>(null);
   const [claudeStatus, setClaudeStatus] = useState("");
   const [loadingModels, setLoadingModels] = useState(false);
-  const [newMcp, setNewMcp] = useState({ name: "", url: "", authMode: "none" as "none" | "oauth", clientId: "" });
+  const [newMcp, setNewMcp] = useState({ name: "", url: "", authMode: "none" as "none" | "oauth" });
   const [mcpStatus, setMcpStatus] = useState("");
   const [avatarNote, setAvatarNote] = useState("");
   const voiceReady = Boolean(minimaxKey && voiceConfig.voiceId);
@@ -1675,27 +1673,14 @@ function SettingsView({
   const [healthMessage, setHealthMessage] = useState("");
   const [notificationStatus, setNotificationStatus] = useState("");
   const [enablingNotifications, setEnablingNotifications] = useState(false);
-  const [apiBase, setApiBase] = useState("");
-  const [apiConfigured, setApiConfigured] = useState(true);
   const [barkServer, setBarkServer] = useState("https://api.day.app");
   const [barkKey, setBarkKey] = useState("");
 
   useEffect(() => {
     if (typeof globalThis.document === "undefined") return;
-    setApiBase(localStorage.getItem(RUNE_API_STORAGE_KEY) ?? DEFAULT_RUNE_API_BASE);
-    setApiConfigured(runeApiConfigured());
     setBarkServer(localStorage.getItem("rune-bark-server") || "https://api.day.app");
     setBarkKey(localStorage.getItem("rune-bark-key") || "");
   }, []);
-
-  const saveApiBase = (value: string) => {
-    const trimmed = value.trim().replace(/\/+$/, "");
-    setApiBase(trimmed);
-    if (trimmed) localStorage.setItem(RUNE_API_STORAGE_KEY, trimmed);
-    else localStorage.removeItem(RUNE_API_STORAGE_KEY);
-    setApiConfigured(runeApiConfigured());
-    setNotificationStatus("");
-  };
 
   const updateProfile = (patch: Partial<Profile>) => setProfile({ ...profile, ...patch });
 
@@ -1787,9 +1772,9 @@ function SettingsView({
 
   const addMcp = () => {
     if (!newMcp.name.trim() || !newMcp.url.trim()) return;
-    const server: McpServer = { id: Date.now(), name: newMcp.name.trim(), url: newMcp.url.trim(), authMode: newMcp.authMode, clientId: newMcp.clientId.trim(), enabled: newMcp.authMode === "none", requiresAuth: newMcp.authMode === "oauth" };
+    const server: McpServer = { id: Date.now(), name: newMcp.name.trim(), url: newMcp.url.trim(), authMode: newMcp.authMode, enabled: newMcp.authMode === "none", requiresAuth: newMcp.authMode === "oauth" };
     setMcpServers([...mcpServers, server]);
-    setNewMcp({ name: "", url: "", authMode: "none", clientId: "" });
+    setNewMcp({ name: "", url: "", authMode: "none" });
     if (server.authMode === "oauth") startMcpOAuth(server).catch((error) => setMcpStatus(error instanceof Error ? error.message : "OAuth 跳转失败"));
   };
 
@@ -1865,7 +1850,7 @@ function SettingsView({
       try {
         keyResponse = await fetch(`${runeApiBase()}/api/push/key`);
       } catch {
-        throw new Error("读取推送密钥失败：通知后端目前无法连接。请检查提醒后端地址，或重新部署 rune-push Worker；这就是 Safari 显示 Load failed 的原因。");
+        throw new Error("通知服务目前无法连接，请稍后重试。");
       }
       const keyData = await readJson(keyResponse, "读取推送密钥");
       if (!keyData.publicKey) throw new Error("读取推送密钥失败：后端还没有配置 VAPID 公钥。");
@@ -2020,7 +2005,6 @@ function SettingsView({
           <input value={newMcp.name} onChange={(event) => setNewMcp({ ...newMcp, name: event.target.value })} placeholder="名称，如 Notion" />
           <input value={newMcp.url} onChange={(event) => setNewMcp({ ...newMcp, url: event.target.value })} placeholder="https://…/mcp" />
           <select value={newMcp.authMode} onChange={(event) => setNewMcp({ ...newMcp, authMode: event.target.value as "none" | "oauth" })}><option value="none">无 OAuth</option><option value="oauth">OAuth</option></select>
-          {newMcp.authMode === "oauth" && <input value={newMcp.clientId} onChange={(event) => setNewMcp({ ...newMcp, clientId: event.target.value })} placeholder="OAuth Client ID" />}
           <button className="outline-action" onClick={addMcp}>＋ 添加 MCP</button>
         </div>
         {mcpStatus && <p className="error-note">{mcpStatus}</p>}
@@ -2074,28 +2058,16 @@ function SettingsView({
           <span className="connection-icon notification-icon">◉</span>
           <span><strong>Rune 定时提醒</strong><small>在锁屏、通知中心和 Apple Watch 显示</small></span>
         </div>
-        <label className="field-label">提醒后端地址
-          <input
-            type="url"
-            inputMode="url"
-            value={apiBase}
-            onChange={(event) => setApiBase(event.target.value)}
-            onBlur={(event) => saveApiBase(event.target.value)}
-            placeholder={DEFAULT_RUNE_API_BASE}
-            autoComplete="off"
-          />
-        </label>
         <label className="field-label">Bark 服务器
           <input type="url" inputMode="url" value={barkServer} onChange={(event) => { setBarkServer(event.target.value); localStorage.setItem("rune-bark-server", event.target.value.trim().replace(/\/+$/, "")); }} placeholder="https://api.day.app" autoComplete="off" />
         </label>
         <label className="field-label">Bark Device Key
           <input type="password" value={barkKey} onChange={(event) => { setBarkKey(event.target.value); localStorage.setItem("rune-bark-key", event.target.value.trim()); }} placeholder="Bark App 中显示的设备 Key" autoComplete="off" />
         </label>
-        <button className="solid-action" onClick={enableNotifications} disabled={enablingNotifications || !apiConfigured}>
+        <button className="solid-action" onClick={enableNotifications} disabled={enablingNotifications}>
           {enablingNotifications ? "正在连接…" : "开启通知"}
         </button>
         {notificationStatus && <p className={notificationStatus.startsWith("通知已经") ? "success-note" : "error-note"}>{notificationStatus}</p>}
-        {!apiConfigured && <p className="setting-note">后端地址留空了，所以通知开不了。默认地址是 <code>{DEFAULT_RUNE_API_BASE}</code>，清空后可以填回去。</p>}
         <p className="setting-note">填写 Bark 后，Rune 创建提醒时会把 LLM 编辑的标题和正文交给后端，到点后通过 Bark 发送；未填写时使用系统 Web Push。通知发送者名称与头像跟随 Rune 设置。Bark Key 只保存在本机，并在创建提醒时发给你配置的提醒后端。</p>
       </section>
         </div>
@@ -2233,14 +2205,12 @@ export default function Pulse() {
     const returnedState = params.get("state");
     const pendingRaw = localStorage.getItem("rune-mcp-oauth-pending");
     if (!code || !pendingRaw) return;
-    const pending = JSON.parse(pendingRaw) as { serverId: number; verifier: string; state: string; redirectUri: string; tokenEndpoint: string };
+    const pending = JSON.parse(pendingRaw) as { serverId: number; verifier: string; state: string; redirectUri: string; tokenEndpoint: string; clientId: string };
     if (!returnedState || returnedState !== pending.state) return;
-    const server = mcpServers.find((item) => item.id === pending.serverId);
-    if (!server?.clientId) return;
     fetch(pending.tokenEndpoint, {
       method: "POST",
       headers: { "content-type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ grant_type: "authorization_code", code, client_id: server.clientId, redirect_uri: pending.redirectUri, code_verifier: pending.verifier }),
+      body: new URLSearchParams({ grant_type: "authorization_code", code, client_id: pending.clientId, redirect_uri: pending.redirectUri, code_verifier: pending.verifier }),
     }).then(async (response) => {
       const data = await response.json();
       if (!response.ok || !data.access_token) throw new Error(data.error_description || "OAuth Token 交换失败");

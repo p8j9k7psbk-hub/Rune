@@ -48,4 +48,12 @@
   .claude-composer textarea {
     font-size: 16px !important;
   }
+
+  .settings-page input:not([type="range"]),
+  .settings-page textarea,
+  .settings-page select {
+    font-family: var(--sans) !important;
+    font-size: 12px !important;
+    font-weight: 400 !important;
+  }
 }

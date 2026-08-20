@@ -2,29 +2,12 @@
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "rune-push",
   "main": "src/index.ts",
-  "compatibility_date": "2026-07-30",
+  "compatibility_date": "2026-08-20",
   "compatibility_flags": ["nodejs_compat"],
   "vars": {
-    "ALLOWED_ORIGIN": "https://p8j9k7psbk-hub.github.io",
-    "VAPID_PUBLIC_KEY": "BCaX6eNFICDhsGzoV-gml_5UD9Hv7azHDTBH_rEzgOCTH8RCu33gofqbcJr_9QgPgrMlU0ef7YGhiupcdlsG-Y8",
-    "VAPID_SUBJECT": "https://p8j9k7psbk-hub.github.io/Rune/"
+    "ALLOWED_ORIGINS": "https://rune.r-vera.com,https://p8j9k7psbk-hub.github.io"
   },
-  "durable_objects": {
-    "bindings": [
-      {
-        "name": "DEVICES",
-        "class_name": "Device"
-      }
-    ]
-  },
-  "migrations": [
-    {
-      "tag": "v1",
-      "new_sqlite_classes": ["Device"]
-    }
-  ],
-  "observability": {
-    "enabled": true,
-    "head_sampling_rate": 1
-  }
+  "durable_objects": { "bindings": [{ "name": "DEVICES", "class_name": "Device" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Device"] }],
+  "observability": { "enabled": true, "head_sampling_rate": 1 }
 }

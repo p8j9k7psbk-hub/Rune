@@ -313,12 +313,13 @@ h1 { font-family:var(--serif); font-weight:500; letter-spacing:-.035em; }
 .bottom-nav span { font-family:var(--serif); font-size:10px; }
 .bottom-nav button.active { color:var(--ink); }
 
-.settings-page { display:flex; flex-direction:column; gap:12px; }
+.settings-page { display:flex; flex-direction:column; gap:10px; font-family:var(--sans); font-size:11px; }
 .settings-page .section-title { margin-bottom:4px; }
+.settings-page .section-title h1 { font-family:var(--sans); font-size:25px; font-weight:600; letter-spacing:-.02em; }
 .settings-mark { opacity:.55; font-size:18px; }
-.settings-section { border:1px solid var(--border); background:var(--surface); border-radius:22px; padding:17px; box-shadow:0 8px 28px rgba(28,29,25,.045),inset 0 1px rgba(255,255,255,.4); backdrop-filter:blur(20px); }
-.settings-heading { margin-bottom:13px; }
-.settings-heading h2 { margin:0; font-family:var(--serif); font-size:21px; font-weight:500; }
+.settings-section { border:1px solid var(--border); background:var(--surface); border-radius:18px; padding:14px; box-shadow:0 8px 28px rgba(28,29,25,.045),inset 0 1px rgba(255,255,255,.4); backdrop-filter:blur(20px); }
+.settings-heading { margin-bottom:10px; }
+.settings-heading h2 { margin:0; font-family:var(--sans); font-size:15px; line-height:1.3; font-weight:600; }
 .settings-page .theme-option { padding:8px 2px; background:var(--surface-strong); border-color:var(--border); }
 .editable-list { display:flex; flex-direction:column; gap:8px; }
 .editable-row { display:grid; grid-template-columns:minmax(0,1fr) 132px 24px; gap:7px; }
@@ -368,18 +369,18 @@ h1 { font-family:var(--serif); font-weight:500; letter-spacing:-.035em; }
 .blur-control { margin-top:17px; display:flex; justify-content:space-between; align-items:center; font-family:var(--serif); font-size:12px; }
 .blur-control input { width:48%; accent-color:#6d7767; }
 /* Settings 分组：用原生 details/summary 折叠，省掉一份状态也自带无障碍语义。 */
-.settings-group { margin-top:14px; border:1px solid var(--border); border-radius:20px; background:var(--surface); overflow:hidden; }
-.settings-group > summary { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:15px 17px; cursor:pointer; list-style:none; }
+.settings-group { margin-top:10px; border:1px solid var(--border); border-radius:17px; background:var(--surface); overflow:hidden; }
+.settings-group > summary { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:12px 14px; cursor:pointer; list-style:none; }
 .settings-group > summary::-webkit-details-marker { display:none; }
 .settings-group > summary span { display:flex; flex-direction:column; gap:2px; }
-.settings-group > summary b { font-family:var(--serif); font-size:15px; font-weight:600; }
+.settings-group > summary b { font-family:var(--sans); font-size:13px; font-weight:600; }
 .settings-group > summary small { color:var(--muted); font-size:10px; }
 .settings-group > summary i { color:var(--muted); font-size:19px; font-style:normal; transition:transform .22s ease; }
 .settings-group[open] > summary i { transform:rotate(90deg); }
 .settings-group[open] > summary { border-bottom:1px solid var(--border); }
-.settings-group-body { padding:2px 15px 15px; }
-.settings-group-body .settings-section { margin-top:15px; border:0; border-radius:0; background:transparent; box-shadow:none; padding:0; }
-.settings-group-body .settings-section + .settings-section { padding-top:15px; border-top:1px solid var(--border); }
+.settings-group-body { padding:2px 13px 13px; }
+.settings-group-body .settings-section { margin-top:12px; border:0; border-radius:0; background:transparent; box-shadow:none; padding:0; }
+.settings-group-body .settings-section + .settings-section { padding-top:12px; border-top:1px solid var(--border); }
 
 /* 头像 + 昵称编辑行 */
 .identity-row { display:flex; align-items:center; gap:12px; margin-top:13px; }
@@ -506,3 +507,5 @@ h1 { font-family:var(--serif); font-weight:500; letter-spacing:-.035em; }
 .capability-check li small { color:var(--muted); font-size:9px; text-align:right; overflow-wrap:anywhere; }
 .capability-check b { width:20px; height:20px; flex:none; display:grid; place-items:center; border:1px solid var(--border); border-radius:50%; color:var(--muted); font-size:9px; font-weight:600; }
 .capability-check b.ok { border-color:color-mix(in srgb,var(--accent) 45%,var(--border)); background:color-mix(in srgb,var(--accent) 12%,transparent); color:var(--accent); }
+.capability-action-row > button { flex:none; border:1px solid var(--border); border-radius:99px; padding:6px 9px; background:var(--surface-strong); color:var(--ink); font-size:9px; cursor:pointer; }
+.capability-action-row > button:disabled { opacity:.55; cursor:wait; }

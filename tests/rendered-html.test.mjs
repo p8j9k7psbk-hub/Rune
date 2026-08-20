@@ -49,8 +49,14 @@ test("keeps required AI, voice, and mobile behavior", async () => {
   assert.match(page, /fetch\(`\$\{base\}\/models/);
   assert.match(page, /SpeechRecognition \|\| scope\.webkitSpeechRecognition/);
   assert.doesNotMatch(page, /const sttSupported/);
-  assert.match(page, /className="call-button"/);
+  assert.match(page, /className="voice-call-button call-button"/);
   assert.match(page, /"mic-button recording"/);
+  assert.match(page, /runVoiceChecks/);
+  assert.match(page, /麦克风权限/);
+  assert.match(page, /MiniMax 可否调用/);
+  assert.match(page, /当前打开界面/);
+  assert.match(page, /profile\.userName \|\| "user"/);
+  assert.match(page, /<p className="eyebrow">user<\/p>/);
   assert.match(page, /<details className="settings-group">\s*<summary><span><b>Rune<\/b>/);
   assert.match(page, /语音（MiniMax）/);
   assert.match(mobileCss, /font-size:\s*16px !important/);

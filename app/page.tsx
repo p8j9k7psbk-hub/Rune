@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import "./mobile-fixes.css";
 
 type Tab = "home" | "chat" | "diary" | "settings";
 type ThemeName = "paper" | "sage" | "ink" | "claude";
@@ -12,24 +13,20 @@ type ClaudeModel = { id: string; display_name: string; created_at?: string };
 type ChatAttachment = { id: number; name: string; kind: "image" | "text"; mediaType: string; data: string };
 type ChatMessage = { role: "user" | "assistant"; text: string; attachments?: ChatAttachment[]; voice?: boolean };
 type RuneAction = { id: string; name: "add_todo" | "write_diary" | "set_home_message" | "create_reminder"; input: Record<string, string>; status: "pending" | "done" | "cancelled" };
-type RegexScope = "reply" | "input" | "both";
-type RegexRule = { id: number; name: string; pattern: string; flags: string; replace: string; scope: RegexScope; enabled: boolean };
 type Profile = {
   name: string;         // Rune 的昵称
   avatar: string;       // Rune 的头像，dataURL；留空则显示昵称首字
   userName: string;     // 你的昵称
   userAvatar: string;   // 你的头像
   instructions: string;
-  regexRules: RegexRule[];
 };
 
 const defaultProfile: Profile = {
   name: "Rune",
   avatar: "",
-  userName: "沈澈",
+  userName: "user",
   userAvatar: "",
   instructions: "你是 Rune，一个安静、真诚、有温度的私人陪伴助手。使用简洁自然的中文回答。",
-  regexRules: [],
 };
 
 // 手机照片直接转 base64 有好几 MB，存两张就吃掉大半配额。
@@ -66,19 +63,14 @@ function initialOf(name: string, fallback: string) {
   return (name.trim() || fallback).slice(0, 1);
 }
 
-// 正则规则：对发出去的内容或收到的回复做替换。写错的规则直接跳过，不能让聊天崩掉。
-function applyRegexRules(text: string, rules: RegexRule[], scope: "reply" | "input") {
-  let result = text;
-  for (const rule of rules) {
-    if (!rule.enabled || !rule.pattern) continue;
-    if (rule.scope !== "both" && rule.scope !== scope) continue;
-    try {
-      result = result.replace(new RegExp(rule.pattern, rule.flags || "g"), rule.replace);
-    } catch {
-      // 无效的正则或标志，忽略这一条
-    }
-  }
-  return result;
+type ApiProtocol = "anthropic" | "openai";
+
+function normalizeAiApiBase(value: string) {
+  return value.trim().replace(/\/+$/, "").replace(/\/models$/, "").replace(/\/chat\/completions$/, "").replace(/\/messages$/, "");
+}
+
+function apiProtocolFor(base: string): ApiProtocol {
+  return /(^|\.)anthropic\.com\b|\/anthropic\b/i.test(base) ? "anthropic" : "openai";
 }
 
 type StoredConversation = { id: number; title: string; updatedAt: number; messages: ChatMessage[] };
@@ -279,6 +271,14 @@ type SpeechRecognitionLike = {
   onerror: ((event: { error: string }) => void) | null;
   onend: (() => void) | null;
 };
+
+function MicrophoneIcon() {
+  return <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.8 10.5a6.2 6.2 0 0 0 12.4 0M12 16.7V21M8.8 21h6.4"/></svg>;
+}
+
+function PhoneIcon() {
+  return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M7.2 3.8 4.8 5.5c-.8.6-.9 1.8-.5 2.7 2.2 5.3 6.2 9.3 11.5 11.5.9.4 2.1.3 2.7-.5l1.7-2.4c.5-.7.3-1.7-.5-2.1l-3.4-1.7c-.7-.3-1.5-.1-1.9.5l-.8 1.2a14.2 14.2 0 0 1-4.3-4.3l1.2-.8c.6-.4.8-1.2.5-1.9L9.3 4.3c-.4-.8-1.4-1-2.1-.5Z"/></svg>;
+}
 
 // 每次请求都把"此刻"算一遍塞进 system prompt。
 // 不做成工具是因为工具结果要靠 tool_result 回传，而那条链路目前还没闭环。
@@ -487,7 +487,7 @@ function HomeView({
   );
 }
 
-function DiaryView() {
+function DiaryView({ profile }: { profile: Profile }) {
   const [mode, setMode] = useState<"mine" | "rune">("mine");
   const today = useMemo(() => new Date(), []);
   const todayKey = localDateKey(today);
@@ -573,8 +573,8 @@ function DiaryView() {
       </header>
 
       <div className="segmented-control">
-        <button className={mode === "mine" ? "active" : ""} onClick={() => setMode("mine")}>kiki</button>
-        <button className={mode === "rune" ? "active" : ""} onClick={() => setMode("rune")}>Rune</button>
+        <button className={mode === "mine" ? "active" : ""} onClick={() => setMode("mine")}>{profile.userName || "user"}</button>
+        <button className={mode === "rune" ? "active" : ""} onClick={() => setMode("rune")}>{profile.name || "Rune"}</button>
       </div>
 
       <p className="date-label">{formattedDate}</p>
@@ -653,6 +653,7 @@ function DiaryView() {
 }
 
 function ChatView({
+  aiApiBase,
   claudeKey,
   claudeModel,
   claudeModels,
@@ -664,6 +665,7 @@ function ChatView({
   voiceConfig,
   minimaxKey,
 }: {
+  aiApiBase: string;
   voiceConfig: VoiceConfig;
   minimaxKey: string;
   claudeKey: string;
@@ -703,8 +705,16 @@ function ChatView({
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const callActiveRef = useRef(false);
-  const sttSupported = typeof globalThis.window !== "undefined" && Boolean(speechRecognitionClass());
   const voiceReady = Boolean(minimaxKey && voiceConfig.voiceId);
+
+  useEffect(() => {
+    if (typeof globalThis.location === "undefined") return;
+    if (new URLSearchParams(globalThis.location.search).get("preview") !== "voice-call") return;
+    setCallActive(true);
+    callActiveRef.current = true;
+    setCallStage("speaking");
+    setCallReply("我在。慢慢说，我会听着。 ");
+  }, []);
 
   const stopAudio = () => {
     if (audioRef.current) {
@@ -775,7 +785,7 @@ function ChatView({
   // 听一句话：静音或用户手动停止后 resolve 出最终文本
   const listenOnce = () => new Promise<string>((resolve, reject) => {
     const Recognition = speechRecognitionClass();
-    if (!Recognition) { reject(new Error("这个浏览器不支持语音识别。")); return; }
+    if (!Recognition) { reject(new Error("当前页面没有拿到系统语音识别接口。请确认使用 HTTPS，并在 iPhone 设置中允许 Rune 使用麦克风与语音识别。")); return; }
     const recognition = new Recognition();
     recognition.lang = "zh-CN";
     recognition.continuous = false;
@@ -857,7 +867,6 @@ function ChatView({
   };
 
   const startCall = () => {
-    if (!sttSupported) { setChatNotice("这个浏览器不支持语音识别，打不了电话。"); return; }
     if (!voiceReady) { setChatNotice("先去 Settings → 语音 填好 MiniMax 的 Key 和 Voice ID。"); return; }
     setCallActive(true);
     callActiveRef.current = true;
@@ -1059,7 +1068,7 @@ function ChatView({
 
   const sendMessage = async (spokenText?: string): Promise<string> => {
     const raw = (spokenText ?? input).trim();
-    const text = applyRegexRules(raw, profile.regexRules, "input");
+    const text = raw;
     if ((!text && !attachments.length) || sending) return "";
     const outgoingAttachments = attachments;
     const nextMessages: ChatMessage[] = [...messages, { role: "user", text, attachments: outgoingAttachments }];
@@ -1067,7 +1076,7 @@ function ChatView({
     setInput("");
     setAttachments([]);
     if (!claudeKey || !claudeModel) {
-      const hint = "先去 Settings 连接 Claude API 并选择模型，我就可以真正回复你了。";
+      const hint = "先去 Settings 连接 AI API 并选择模型，我就可以真正回复你了。";
       setMessages([...nextMessages, { role: "assistant", text: hint }]);
       return hint;
     }
@@ -1081,20 +1090,22 @@ function ChatView({
         { name: "set_home_message", description: "修改 Rune 首页顶部的主要问候文字。", input_schema: { type: "object", properties: { message: { type: "string" } }, required: ["message"] } },
         { name: "create_reminder", description: "创建一个 Rune 定时提醒。", input_schema: { type: "object", properties: { title: { type: "string" }, datetime: { type: "string", description: "带时区的 ISO 8601 时间" } }, required: ["title", "datetime"] } },
       ];
-      const response = await fetch("https://api.anthropic.com/v1/messages", {
+      const apiBase = normalizeAiApiBase(aiApiBase);
+      const protocol = apiProtocolFor(apiBase);
+      const systemPrompt = `${profile.instructions || defaultProfile.instructions}\n\n${nowContext()}\n需要修改 ${profile.name || "Rune"} 数据或创建提醒时必须调用对应工具，不要假装已经完成。
+${voiceReady ? "当这句话情绪比较浓、更适合说出来而不是打字时（安慰、想念、认真的鼓励、道歉之类），在回复最前面加上 [[voice]] 标记，它会以语音消息的形式发过去。日常闲聊、查信息、确认事项不要加。一次对话里别频繁使用。" : ""}`;
+      const endpoint = protocol === "anthropic" ? `${apiBase}/messages` : `${apiBase}/chat/completions`;
+      const response = await fetch(endpoint, {
         method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "x-api-key": claudeKey,
-          "anthropic-version": "2023-06-01",
-          "anthropic-dangerous-direct-browser-access": "true",
+        headers: protocol === "anthropic" ? {
+          "content-type": "application/json", "x-api-key": claudeKey,
+          "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true",
           ...(enabledMcp.length ? { "anthropic-beta": "mcp-client-2025-11-20" } : {}),
-        },
-        body: JSON.stringify({
+        } : { "content-type": "application/json", authorization: `Bearer ${claudeKey}` },
+        body: JSON.stringify(protocol === "anthropic" ? {
           model: claudeModel,
           max_tokens: 2048,
-          system: `${profile.instructions || defaultProfile.instructions}\n\n${nowContext()}\n需要修改 ${profile.name || "Rune"} 数据或创建提醒时必须调用对应工具，不要假装已经完成。
-${voiceReady ? "当这句话情绪比较浓、更适合说出来而不是打字时（安慰、想念、认真的鼓励、道歉之类），在回复最前面加上 [[voice]] 标记，它会以语音消息的形式发过去。日常闲聊、查信息、确认事项不要加。一次对话里别频繁使用。" : ""}`,
+          system: systemPrompt,
           messages: nextMessages.map((message) => ({
             role: message.role,
             content: message.role === "assistant" ? message.text : [
@@ -1113,15 +1124,28 @@ ${voiceReady ? "当这句话情绪比较浓、更适合说出来而不是打字�
             ...enabledMcp.map((server) => ({ type: "mcp_toolset", mcp_server_name: server.name })),
           ],
           ...(enabledMcp.length ? { mcp_servers: enabledMcp.map((server) => ({ type: "url", url: server.url, name: server.name })) } : {}),
+        } : {
+          model: claudeModel,
+          max_tokens: 2048,
+          messages: [
+            { role: "system", content: systemPrompt },
+            ...nextMessages.map((message) => ({ role: message.role, content: message.text || "（含附件的消息）" })),
+          ],
+          tools: runeTools.map((tool) => ({ type: "function", function: { name: tool.name, description: tool.description, parameters: tool.input_schema } })),
         }),
       });
       const data = await response.json();
-      if (!response.ok) throw new Error(data?.error?.message || "Claude API 请求失败");
-      const rawReply = (data.content || []).filter((block: { type: string }) => block.type === "text").map((block: { text: string }) => block.text).join("\n");
-      const reply = applyRegexRules(rawReply, profile.regexRules, "reply");
-      const proposed = (data.content || [])
-        .filter((block: { type: string; name?: string }) => block.type === "tool_use" && ["add_todo", "write_diary", "set_home_message", "create_reminder"].includes(block.name || ""))
-        .map((block: { id: string; name: RuneAction["name"]; input: Record<string, string> }) => ({ id: block.id, name: block.name, input: block.input, status: "pending" as const }));
+      if (!response.ok) throw new Error(data?.error?.message || "AI API 请求失败");
+      const reply = protocol === "anthropic"
+        ? (data.content || []).filter((block: { type: string }) => block.type === "text").map((block: { text: string }) => block.text).join("\n")
+        : String(data.choices?.[0]?.message?.content || "");
+      const proposed = protocol === "anthropic"
+        ? (data.content || []).filter((block: { type: string; name?: string }) => block.type === "tool_use" && ["add_todo", "write_diary", "set_home_message", "create_reminder"].includes(block.name || "")).map((block: { id: string; name: RuneAction["name"]; input: Record<string, string> }) => ({ id: block.id, name: block.name, input: block.input, status: "pending" as const }))
+        : (data.choices?.[0]?.message?.tool_calls || []).filter((call: { function?: { name?: string } }) => ["add_todo", "write_diary", "set_home_message", "create_reminder"].includes(call.function?.name || "")).map((call: { id: string; function: { name: RuneAction["name"]; arguments?: string } }) => {
+            let input: Record<string, string> = {};
+            try { input = JSON.parse(call.function.arguments || "{}"); } catch { input = {}; }
+            return { id: call.id, name: call.function.name, input, status: "pending" as const };
+          });
       // Rune 用 [[voice]] 标记"这句想说出来"，剥掉标记并记成语音消息
       const wantsVoice = VOICE_MARK.test(reply);
       const spoken = reply.replace(VOICE_MARK, "").trim();
@@ -1179,8 +1203,8 @@ ${voiceReady ? "当这句话情绪比较浓、更适合说出来而不是打字�
       <header className="claude-chat-header">
         <span className="claude-mini-mark">{profile.avatar ? <img src={profile.avatar} alt="" /> : <img src="./pulse-icon-claude.png" alt="" />}</span>
         <div><strong>{profile.name || "Rune"}</strong><small>{selectedModel?.display_name || claudeModel || "尚未连接模型"}</small></div>
-        {sttSupported && voiceReady && (
-          <button className="call-button" onClick={startCall} aria-label={`和 ${profile.name || "Rune"} 通话`}>✆</button>
+        {(
+          <button className="voice-call-button call-button" onClick={startCall} aria-label={`和 ${profile.name || "Rune"} 语音通话`} title="语音通话"><PhoneIcon /></button>
         )}
         <button
           className={showHistory ? "history-button active" : "history-button"}
@@ -1218,7 +1242,7 @@ ${voiceReady ? "当这句话情绪比较浓、更适合说出来而不是打字�
           <div className="claude-welcome">
             {profile.avatar ? <img className="welcome-avatar" src={profile.avatar} alt="" /> : <img src="./pulse-icon-claude.png" alt="" />}
             <h1>今天想聊些什么？</h1>
-            <p>{claudeKey ? `${profile.name || "Rune"} 已经准备好了。` : "连接 Claude API 后，这里会变成真正的对话。"}</p>
+            <p>{claudeKey ? `${profile.name || "Rune"} 已经准备好了。` : "连接 AI API 后，这里会变成真正的对话。"}</p>
             {!claudeKey && <button onClick={goSettings}>前往 Settings</button>}
           </div>
         )}
@@ -1294,14 +1318,14 @@ ${voiceReady ? "当这句话情绪比较浓、更适合说出来而不是打字�
         <input ref={attachmentRef} className="hidden-file" type="file" multiple accept="image/*,.txt,.md,.json,.csv,text/*" onChange={(event) => addAttachments(event.target.files)} />
         <div>
           <button className="attach-button" onClick={() => attachmentRef.current?.click()} aria-label="添加附件">＋</button>
-          {sttSupported && (
+          {(
             <button
               className={listening ? "mic-button recording" : "mic-button"}
               onClick={sendVoiceMessage}
               aria-label={listening ? "停止录音并发送" : "按住说话"}
-            >{listening ? "■" : "🎙"}</button>
+            >{listening ? <span className="recording-stop" /> : <MicrophoneIcon />}</button>
           )}
-          <small>{listening ? (liveTranscript || "在听…") : (selectedModel?.display_name || "Claude")}</small>
+          <small>{listening ? (liveTranscript || "在听…") : (selectedModel?.display_name || "AI")}</small>
           <button className="send-button" onClick={() => sendMessage()} disabled={(!input.trim() && !attachments.length) || sending} aria-label="发送消息">↑</button>
         </div>
       </div>
@@ -1310,6 +1334,8 @@ ${voiceReady ? "当这句话情绪比较浓、更适合说出来而不是打字�
 }
 
 function SettingsView({
+  aiApiBase,
+  setAiApiBase,
   theme,
   setTheme,
   anniversaries,
@@ -1333,6 +1359,8 @@ function SettingsView({
   minimaxKey,
   setMinimaxKey,
 }: {
+  aiApiBase: string;
+  setAiApiBase: (base: string) => void;
   profile: Profile;
   setProfile: (profile: Profile) => void;
   voiceConfig: VoiceConfig;
@@ -1361,8 +1389,50 @@ function SettingsView({
   const [loadingModels, setLoadingModels] = useState(false);
   const [newMcp, setNewMcp] = useState({ name: "", url: "" });
   const [avatarNote, setAvatarNote] = useState("");
+  const voiceReady = Boolean(minimaxKey && voiceConfig.voiceId);
   const [voiceStatus, setVoiceStatus] = useState("");
   const [testingVoice, setTestingVoice] = useState(false);
+  const [runningVoiceChecks, setRunningVoiceChecks] = useState(false);
+  const [voiceChecks, setVoiceChecks] = useState({
+    microphone: "尚未测试",
+    minimax: "尚未测试",
+    surface: "检测中…",
+  });
+
+  useEffect(() => {
+    if (typeof globalThis.window === "undefined") return;
+    const standalone = globalThis.matchMedia?.("(display-mode: standalone)").matches
+      || Boolean((navigator as Navigator & { standalone?: boolean }).standalone);
+    const iphone = /iPhone|iPad|iPod/i.test(navigator.userAgent);
+    setVoiceChecks((current) => ({
+      ...current,
+      surface: standalone ? `${iphone ? "iPhone" : "设备"}主屏幕 PWA` : iphone ? "iPhone Safari 浏览器" : "普通浏览器页面",
+    }));
+  }, []);
+
+  const runVoiceChecks = async () => {
+    setRunningVoiceChecks(true);
+    setVoiceChecks((current) => ({ ...current, microphone: "正在请求…", minimax: "正在调用…" }));
+
+    try {
+      if (!navigator.mediaDevices?.getUserMedia) throw new Error("当前页面没有麦克风接口");
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getTracks().forEach((track) => track.stop());
+      setVoiceChecks((current) => ({ ...current, microphone: "权限正常" }));
+    } catch (error) {
+      setVoiceChecks((current) => ({ ...current, microphone: error instanceof Error ? error.message : "权限不可用" }));
+    }
+
+    try {
+      const url = await synthesizeSpeech("Rune 语音连接测试。", voiceConfig, minimaxKey);
+      URL.revokeObjectURL(url);
+      setVoiceChecks((current) => ({ ...current, minimax: "调用成功" }));
+    } catch (error) {
+      setVoiceChecks((current) => ({ ...current, minimax: error instanceof Error ? error.message : "调用失败" }));
+    } finally {
+      setRunningVoiceChecks(false);
+    }
+  };
 
   const testVoice = async () => {
     setTestingVoice(true);
@@ -1416,27 +1486,6 @@ function SettingsView({
       setAvatarNote(`已更新头像（约 ${Math.round(data.length * 2 / 1024)} KB）。`);
     } catch {
       setAvatarNote("这张图片读不出来，换一张试试。");
-    }
-  };
-
-  const updateRule = (id: number, patch: Partial<RegexRule>) => {
-    updateProfile({ regexRules: profile.regexRules.map((rule) => (rule.id === id ? { ...rule, ...patch } : rule)) });
-  };
-
-  const addRule = () => {
-    updateProfile({
-      regexRules: [...profile.regexRules, { id: Date.now(), name: "新规则", pattern: "", flags: "g", replace: "", scope: "reply", enabled: true }],
-    });
-  };
-
-  // 正则写错了要当场看得见，不能等到聊天时才发现没生效。
-  const ruleError = (rule: RegexRule) => {
-    if (!rule.pattern) return "";
-    try {
-      new RegExp(rule.pattern, rule.flags || "g");
-      return "";
-    } catch (error) {
-      return error instanceof Error ? error.message : "无效的正则";
     }
   };
 
@@ -1518,6 +1567,11 @@ function SettingsView({
   };
 
   const loadClaudeModels = async () => {
+    const base = normalizeAiApiBase(aiApiBase);
+    if (!base) {
+      setClaudeStatus("请先填写 API 地址。");
+      return;
+    }
     if (!claudeKey.trim()) {
       setClaudeStatus("请先填写 API Key。");
       return;
@@ -1525,16 +1579,20 @@ function SettingsView({
     setLoadingModels(true);
     setClaudeStatus("");
     try {
-      const response = await fetch("https://api.anthropic.com/v1/models?limit=1000", {
-        headers: {
+      const protocol = apiProtocolFor(base);
+      const response = await fetch(`${base}/models${protocol === "anthropic" ? "?limit=1000" : ""}`, {
+        headers: protocol === "anthropic" ? {
           "x-api-key": claudeKey.trim(),
           "anthropic-version": "2023-06-01",
           "anthropic-dangerous-direct-browser-access": "true",
-        },
+        } : { authorization: `Bearer ${claudeKey.trim()}` },
       });
       const result = await response.json();
       if (!response.ok) throw new Error(result?.error?.message || "读取模型失败");
-      const models = (result.data || []) as ClaudeModel[];
+      const models = (result.data || result.models || []).map((model: ClaudeModel | string) => typeof model === "string"
+        ? { id: model, display_name: model }
+        : { ...model, id: String(model.id || ""), display_name: String(model.display_name || model.id || "") })
+        .filter((model: ClaudeModel) => model.id) as ClaudeModel[];
       setClaudeModels(models);
       const preferred = models.find((model) => model.id === claudeModel)
         || models.find((model) => model.id.includes("sonnet-4-6"))
@@ -1542,6 +1600,7 @@ function SettingsView({
         || models[0];
       if (preferred) setClaudeModel(preferred.id);
       sessionStorage.setItem("rune-claude-key", claudeKey.trim());
+      sessionStorage.setItem("rune-ai-api-base", base);
       sessionStorage.setItem("rune-claude-models", JSON.stringify(models));
       if (preferred) sessionStorage.setItem("rune-claude-model", preferred.id);
       setClaudeStatus(`连接成功，读取到 ${models.length} 个可用模型。`);
@@ -1598,7 +1657,7 @@ function SettingsView({
     <main className="page settings-page">
       <header className="section-title"><h1>Settings</h1><span className="settings-mark">⌘</span></header>
 
-      <details className="settings-group" open>
+      <details className="settings-group">
         <summary><span><b>Rune</b><small>人设、指令与模型</small></span><i aria-hidden="true">›</i></summary>
         <div className="settings-group-body">
       <section className="settings-section">
@@ -1620,8 +1679,8 @@ function SettingsView({
             {profile.userAvatar ? <img src={profile.userAvatar} alt="" /> : <span>{initialOf(profile.userName, "我")}</span>}
           </button>
           <div className="identity-fields">
-            <p className="eyebrow">我</p>
-            <input value={profile.userName} onChange={(event) => updateProfile({ userName: event.target.value })} placeholder="你的昵称" autoComplete="off" aria-label="我的昵称" />
+            <p className="eyebrow">user</p>
+            <input value={profile.userName} onChange={(event) => updateProfile({ userName: event.target.value })} placeholder="user" autoComplete="off" aria-label="user 昵称" />
           </div>
           {profile.userAvatar && <button className="remove-row" onClick={() => updateProfile({ userAvatar: "" })} aria-label="移除我的头像">×</button>}
         </div>
@@ -1641,7 +1700,7 @@ function SettingsView({
             className="instructions-input"
             value={profile.instructions}
             onChange={(event) => updateProfile({ instructions: event.target.value })}
-            placeholder="描述 Rune 是谁、怎么说话、要避免什么……这段会作为 system prompt 发给 Claude。"
+            placeholder="描述 Rune 是谁、怎么说话、要避免什么……这段会作为 system prompt 发给所选模型。"
             rows={7}
           />
         </label>
@@ -1649,39 +1708,9 @@ function SettingsView({
       </section>
 
       <section className="settings-section">
-        <div className="settings-heading"><p className="eyebrow">Regex</p><h2>正则规则</h2></div>
-        <div className="regex-list">
-          {!profile.regexRules.length && <p className="setting-note">还没有规则。规则会在消息发出前、或回复显示前做文本替换。</p>}
-          {profile.regexRules.map((rule) => {
-            const error = ruleError(rule);
-            return (
-              <div className={rule.enabled ? "regex-rule" : "regex-rule off"} key={rule.id}>
-                <div className="regex-rule-head">
-                  <button className={rule.enabled ? "mini-switch on" : "mini-switch"} aria-label={`启用 ${rule.name}`} onClick={() => updateRule(rule.id, { enabled: !rule.enabled })}><i /></button>
-                  <input aria-label="规则名称" value={rule.name} onChange={(event) => updateRule(rule.id, { name: event.target.value })} placeholder="规则名称" />
-                  <button className="remove-row" aria-label={`删除 ${rule.name}`} onClick={() => updateProfile({ regexRules: profile.regexRules.filter((item) => item.id !== rule.id) })}>×</button>
-                </div>
-                <input className="regex-field" aria-label="匹配" value={rule.pattern} onChange={(event) => updateRule(rule.id, { pattern: event.target.value })} placeholder="匹配（正则），如 ^\s+" autoComplete="off" spellCheck={false} />
-                <input className="regex-field" aria-label="替换为" value={rule.replace} onChange={(event) => updateRule(rule.id, { replace: event.target.value })} placeholder="替换为（可留空表示删除）" autoComplete="off" spellCheck={false} />
-                <div className="regex-meta">
-                  <input aria-label="标志" value={rule.flags} onChange={(event) => updateRule(rule.id, { flags: event.target.value })} placeholder="gi" autoComplete="off" spellCheck={false} />
-                  <select aria-label="作用范围" value={rule.scope} onChange={(event) => updateRule(rule.id, { scope: event.target.value as RegexScope })}>
-                    <option value="reply">作用于回复</option>
-                    <option value="input">作用于我的输入</option>
-                    <option value="both">两者都作用</option>
-                  </select>
-                </div>
-                {error && <p className="error-note">正则有误：{error}</p>}
-              </div>
-            );
-          })}
-        </div>
-        <button className="outline-action" onClick={addRule}>＋ 添加规则</button>
-        <p className="setting-note">按列表顺序依次执行。替换里可以用 <code>$1</code> 引用捕获组。写错的规则会标红并自动跳过，不影响聊天。</p>
-      </section>
-      <section className="settings-section">
-        <div className="settings-heading"><p className="eyebrow">AI connection</p><h2>Claude API</h2></div>
-        <label className="field-label">API Key<input type="password" value={claudeKey} onChange={(event) => { setClaudeKey(event.target.value); setClaudeStatus(""); }} placeholder="sk-ant-••••••••" autoComplete="off" /></label>
+        <div className="settings-heading"><p className="eyebrow">AI connection</p><h2>通用 AI API</h2></div>
+        <label className="field-label">API 地址<input type="url" value={aiApiBase} onChange={(event) => { setAiApiBase(event.target.value); setClaudeStatus(""); }} placeholder="https://api.example.com/v1" autoComplete="off" /></label>
+        <label className="field-label">API Key<input type="password" value={claudeKey} onChange={(event) => { setClaudeKey(event.target.value); setClaudeStatus(""); }} placeholder="sk-••••••••" autoComplete="off" /></label>
         <button className="solid-action" onClick={loadClaudeModels} disabled={loadingModels}>
           {loadingModels ? "正在读取…" : "读取这个 Key 的可用模型"}
         </button>
@@ -1692,7 +1721,7 @@ function SettingsView({
           </select>
         </label>
         {claudeStatus && <p className={claudeStatus.startsWith("连接成功") ? "success-note" : "error-note"}>{claudeStatus}</p>}
-        <p className="setting-note">Key 只保存在当前浏览器会话，关闭 Safari 后会清除。Rune 是静态网页，因此请求会从你的设备直接发给 Anthropic；若将来公开给别人使用，建议改成服务器代理，避免在浏览器里处理 Key。</p>
+        <p className="setting-note">兼容 Anthropic 原生接口，以及提供 <code>/models</code> 与 <code>/chat/completions</code> 的 OpenAI-compatible 接口。部分服务商会阻止浏览器直连，这种情况需要开启 CORS 或使用服务器代理。</p>
       </section>
       <section className="settings-section">
         <div className="settings-heading"><p className="eyebrow">Voice</p><h2>语音（MiniMax）</h2></div>
@@ -1731,6 +1760,14 @@ function SettingsView({
           <option value="https://api.minimaxi.com/v1/t2a_v2">国内站（备用域名）</option>
           <option value="https://api.minimax.io/v1/t2a_v2">国际站 platform.minimax.io</option>
         </datalist>
+        <div className="capability-check">
+          <div className="capability-check-head"><p className="eyebrow">语音测试</p><button onClick={runVoiceChecks} disabled={runningVoiceChecks}>{runningVoiceChecks ? "测试中…" : "运行测试"}</button></div>
+          <ul>
+            <li><b className={voiceChecks.microphone === "权限正常" ? "ok" : ""}>1</b><span>麦克风权限<small>{voiceChecks.microphone}</small></span></li>
+            <li><b className={voiceChecks.minimax === "调用成功" ? "ok" : ""}>2</b><span>MiniMax 可否调用<small>{voiceChecks.minimax}</small></span></li>
+            <li><b className="ok">3</b><span>当前打开界面<small>{voiceChecks.surface}</small></span></li>
+          </ul>
+        </div>
         <p className="setting-note">Key 只存在当前浏览器会话，关掉就没了；其余几项会保存在这台设备。<br/>{profile.name || "Rune"} 会自己判断什么时候用语音说话（情绪浓的时候），不是每条都念，所以不会一直烧额度。语音识别用系统自带能力，不额外收费。</p>
       </section>
 
@@ -1857,6 +1894,14 @@ function SplashScreen({ leaving }: { leaving: boolean }) {
   );
 }
 
+function NavIcon({ name }: { name: "home" | "chat" | "diary" | "settings" }) {
+  const common = { width: 23, height: 23, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 1.65, strokeLinecap: "round" as const, strokeLinejoin: "round" as const, "aria-hidden": true };
+  if (name === "home") return <svg {...common}><path d="M3.4 11.2 12 4l8.6 7.2"/><path d="M5.5 10.1v9.4h13v-9.4M9.3 19.5v-5.8h5.4v5.8"/><path d="M8.2 6.9V4.6h2"/></svg>;
+  if (name === "chat") return <svg {...common}><path d="M20.3 11.5c0 4.1-3.8 7.3-8.4 7.3-1.1 0-2.2-.2-3.2-.5L4 19.7l1.5-3.9a6.7 6.7 0 0 1-1.9-4.6C3.6 7.1 7.3 4 12 4s8.3 3.2 8.3 7.5Z"/><path d="M8.2 10.7h7.6M8.2 14h4.8"/></svg>;
+  if (name === "diary") return <svg {...common}><path d="M6.1 3.5h10.7a2 2 0 0 1 2 2v15H7.4a2.2 2.2 0 0 1-2.2-2.2V5.5c0-1.1.9-2 2-2"/><path d="M8.4 3.5v17M11.6 8h4.1M11.6 11.5h4.1M11.6 15h2.7"/></svg>;
+  return <svg {...common}><circle cx="12" cy="12" r="3.1"/><path d="m19.2 13.4 1.3 1-.2 1.6-1.6.7-.8 1.3.2 1.7-1.5.8-1.3-1.1-1.5.3-.9 1.4h-1.8l-.9-1.4-1.5-.3-1.3 1.1-1.5-.8.2-1.7-.8-1.3-1.6-.7-.2-1.6 1.3-1v-1.6l-1.3-1 .2-1.6 1.6-.7.8-1.3-.2-1.7 1.5-.8 1.3 1.1 1.5-.3.9-1.4h1.8l.9 1.4 1.5.3 1.3-1.1 1.5.8-.2 1.7.8 1.3 1.6.7.2 1.6-1.3 1Z"/></svg>;
+}
+
 export default function Pulse() {
   const [tab, setTab] = useState<Tab>("home");
   const [theme, setTheme] = useState<ThemeName>("paper");
@@ -1865,6 +1910,7 @@ export default function Pulse() {
   const [mcpServers, setMcpServers] = useState<McpServer[]>(defaultMcpServers);
   const [metDate, setMetDate] = useState("");
   const [claudeKey, setClaudeKey] = useState("");
+  const [aiApiBase, setAiApiBase] = useState("https://api.anthropic.com/v1");
   const [claudeModel, setClaudeModel] = useState("");
   const [claudeModels, setClaudeModels] = useState<ClaudeModel[]>([]);
   const [profile, setProfile] = useState<Profile>(defaultProfile);
@@ -1903,11 +1949,16 @@ export default function Pulse() {
         if (data.metDate) setMetDate(data.metDate);
         if (data.homeMessage) setHomeMessage(data.homeMessage);
         if (data.homeMessageAt) setHomeMessageAt(data.homeMessageAt);
-        if (data.profile) setProfile({ ...defaultProfile, ...data.profile });
+        if (data.profile) {
+          const storedProfile = { ...defaultProfile, ...data.profile } as Profile;
+          if (!storedProfile.userName || ["沈澈", "kiki"].includes(storedProfile.userName)) storedProfile.userName = "user";
+          setProfile(storedProfile);
+        }
         if (data.voiceConfig) setVoiceConfig({ ...defaultVoiceConfig, ...data.voiceConfig });
       setMinimaxKey(sessionStorage.getItem(MINIMAX_KEY_STORAGE) || "");
       }
       setClaudeKey(sessionStorage.getItem("rune-claude-key") || "");
+      setAiApiBase(sessionStorage.getItem("rune-ai-api-base") || "https://api.anthropic.com/v1");
       setClaudeModel(sessionStorage.getItem("rune-claude-model") || "");
       const storedModels = sessionStorage.getItem("rune-claude-models");
       if (storedModels) setClaudeModels(JSON.parse(storedModels));
@@ -1927,6 +1978,11 @@ export default function Pulse() {
     sessionStorage.setItem("rune-claude-model", claudeModel);
   }, [claudeModel]);
 
+  useEffect(() => {
+    if (typeof globalThis.document === "undefined") return;
+    sessionStorage.setItem("rune-ai-api-base", normalizeAiApiBase(aiApiBase));
+  }, [aiApiBase]);
+
   return (
     <div className={`app theme-${theme}`}>
       {splashState !== "hidden" && <SplashScreen leaving={splashState === "leaving"} />}
@@ -1935,15 +1991,15 @@ export default function Pulse() {
       <div className="phone-shell">
         <div className="status-spacer" />
         {tab === "home" && <HomeView goDiary={() => setTab("diary")} goChat={() => setTab("chat")} goSettings={() => setTab("settings")} anniversaries={anniversaries} health={health} metDate={metDate} homeMessage={homeMessage} homeMessageAt={homeMessageAt} profile={profile} />}
-        {tab === "chat" && <ChatView claudeKey={claudeKey} claudeModel={claudeModel} claudeModels={claudeModels} setClaudeModel={setClaudeModel} goSettings={() => setTab("settings")} mcpServers={mcpServers} setHomeMessage={updateHomeMessage} profile={profile} voiceConfig={voiceConfig} minimaxKey={minimaxKey} />}
-        {tab === "diary" && <DiaryView />}
-        {tab === "settings" && <SettingsView theme={theme} setTheme={setTheme} anniversaries={anniversaries} setAnniversaries={setAnniversaries} health={health} setHealth={setHealth} mcpServers={mcpServers} setMcpServers={setMcpServers} metDate={metDate} setMetDate={setMetDate} claudeKey={claudeKey} setClaudeKey={setClaudeKey} claudeModel={claudeModel} setClaudeModel={setClaudeModel} claudeModels={claudeModels} setClaudeModels={setClaudeModels} profile={profile} setProfile={setProfile} voiceConfig={voiceConfig} setVoiceConfig={setVoiceConfig} minimaxKey={minimaxKey} setMinimaxKey={setMinimaxKey} />}
+        {tab === "chat" && <ChatView aiApiBase={aiApiBase} claudeKey={claudeKey} claudeModel={claudeModel} claudeModels={claudeModels} setClaudeModel={setClaudeModel} goSettings={() => setTab("settings")} mcpServers={mcpServers} setHomeMessage={updateHomeMessage} profile={profile} voiceConfig={voiceConfig} minimaxKey={minimaxKey} />}
+        {tab === "diary" && <DiaryView profile={profile} />}
+        {tab === "settings" && <SettingsView aiApiBase={aiApiBase} setAiApiBase={setAiApiBase} theme={theme} setTheme={setTheme} anniversaries={anniversaries} setAnniversaries={setAnniversaries} health={health} setHealth={setHealth} mcpServers={mcpServers} setMcpServers={setMcpServers} metDate={metDate} setMetDate={setMetDate} claudeKey={claudeKey} setClaudeKey={setClaudeKey} claudeModel={claudeModel} setClaudeModel={setClaudeModel} claudeModels={claudeModels} setClaudeModels={setClaudeModels} profile={profile} setProfile={setProfile} voiceConfig={voiceConfig} setVoiceConfig={setVoiceConfig} minimaxKey={minimaxKey} setMinimaxKey={setMinimaxKey} />}
 
         <nav className="bottom-nav" aria-label="主导航">
-          <button className={tab === "home" ? "active" : ""} onClick={() => setTab("home")} aria-label="首页"><i>⌂</i><span>Home</span></button>
-          <button className={tab === "chat" ? "active" : ""} onClick={() => setTab("chat")} aria-label="对话"><i>◌</i><span>Chats</span></button>
-          <button className={tab === "diary" ? "active" : ""} onClick={() => setTab("diary")} aria-label="日记"><i>□</i><span>Diary</span></button>
-          <button className={tab === "settings" ? "active" : ""} onClick={() => setTab("settings")} aria-label="设置"><i>⌘</i><span>Settings</span></button>
+          <button className={tab === "home" ? "active" : ""} onClick={() => setTab("home")} aria-label="首页"><i><NavIcon name="home" /></i><span>Home</span></button>
+          <button className={tab === "chat" ? "active" : ""} onClick={() => setTab("chat")} aria-label="对话"><i><NavIcon name="chat" /></i><span>Chats</span></button>
+          <button className={tab === "diary" ? "active" : ""} onClick={() => setTab("diary")} aria-label="日记"><i><NavIcon name="diary" /></i><span>Diary</span></button>
+          <button className={tab === "settings" ? "active" : ""} onClick={() => setTab("settings")} aria-label="设置"><i><NavIcon name="settings" /></i><span>Settings</span></button>
         </nav>
         <span className="sr-only" aria-live="polite">当前页面：{tabTitle}</span>
       </div>

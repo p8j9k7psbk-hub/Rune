@@ -6,7 +6,7 @@
 }
 
 * { box-sizing: border-box; }
-html { background: #dedbd2; }
+html { background: #dedbd2; -webkit-text-size-adjust:100%; text-size-adjust:100%; }
 body { margin: 0; color: #191a18; font-family: var(--sans); }
 button, input { font: inherit; }
 button { color: inherit; }
@@ -401,8 +401,9 @@ h1 { font-family:var(--serif); font-weight:500; letter-spacing:-.035em; }
 .welcome-avatar { border-radius:50%; object-fit:cover; }
 
 /* 语音：麦克风、朗读、通话 */
-.mic-button { width:31px; height:31px; flex:none; border:1px solid var(--border); border-radius:50%; background:transparent; color:var(--ink); font-size:14px; cursor:pointer; }
+.mic-button { width:34px; height:34px; flex:none; border:1px solid var(--border); border-radius:50%; background:var(--surface); color:var(--ink); cursor:pointer; display:grid; place-items:center; box-shadow:0 2px 8px color-mix(in srgb,var(--ink) 8%,transparent); }
 .mic-button.recording { background:#c0392b; border-color:transparent; color:#fff; animation:mic-pulse 1.2s ease-in-out infinite; }
+.recording-stop { width:8px; height:8px; border-radius:2px; background:currentColor; }
 @keyframes mic-pulse { 0%,100% { opacity:1; } 50% { opacity:.55; } }
 /* 语音消息气泡 */
 .voice-message { display:flex; flex-direction:column; align-items:flex-start; gap:5px; }
@@ -418,7 +419,7 @@ h1 { font-family:var(--serif); font-weight:500; letter-spacing:-.035em; }
 .voice-bubble small { font-size:10px; opacity:.7; }
 .voice-to-text { padding:0; border:0; background:transparent; color:var(--muted); font-size:9px; text-decoration:underline; cursor:pointer; }
 .voice-transcript { margin:2px 0 0; font-size:12px; line-height:1.65; color:var(--ink); }
-.call-button { font-size:15px; }
+.call-button { font-size:15px; display:grid; place-items:center; }
 
 .call-overlay { position:fixed; inset:0; z-index:60; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:14px; padding:32px;
   background:color-mix(in srgb,var(--bg) 92%,#000); color:var(--ink); animation:page-in .3s ease; }
@@ -491,3 +492,17 @@ h1 { font-family:var(--serif); font-weight:500; letter-spacing:-.035em; }
   .metrics-grid { grid-template-columns:repeat(2,1fr); }
   .metric-card { min-height:112px; }
 }
+
+/* 运行环境自检 */
+.capability-check { margin-top:14px; padding:12px 14px; border:1px solid var(--border); border-radius:14px; background:var(--surface); }
+.capability-check-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:9px; }
+.capability-check .eyebrow { margin:0; font-size:10px; }
+.capability-check-head button { border:1px solid var(--border); border-radius:99px; padding:6px 10px; background:var(--surface-strong); color:var(--ink); font-size:9px; cursor:pointer; }
+.capability-check-head button:disabled { cursor:wait; opacity:.55; }
+.capability-check ul { margin:0; padding:0; list-style:none; display:flex; flex-direction:column; gap:5px; }
+.capability-check li { display:flex; align-items:center; gap:9px; padding:7px 0; font-size:11px; line-height:1.4; color:var(--ink); }
+.capability-check li + li { border-top:1px solid color-mix(in srgb,var(--border) 72%,transparent); }
+.capability-check li > span { display:flex; flex:1; min-width:0; justify-content:space-between; align-items:center; gap:10px; }
+.capability-check li small { color:var(--muted); font-size:9px; text-align:right; overflow-wrap:anywhere; }
+.capability-check b { width:20px; height:20px; flex:none; display:grid; place-items:center; border:1px solid var(--border); border-radius:50%; color:var(--muted); font-size:9px; font-weight:600; }
+.capability-check b.ok { border-color:color-mix(in srgb,var(--accent) 45%,var(--border)); background:color-mix(in srgb,var(--accent) 12%,transparent); color:var(--accent); }

@@ -1,7 +1,7 @@
 {
   "name": "Rune",
   "short_name": "Rune",
-  "description": "日记、对话、纪念日与个人生活记录。",
+  "description": "私人生活空间",
   "start_url": "/Rune/",
   "scope": "/Rune/",
   "display": "standalone",
@@ -9,14 +9,10 @@
   "theme_color": "#efeee8",
   "icons": [
     {
-      "src": "/Rune/apple-touch-icon.png",
-      "sizes": "180x180",
-      "type": "image/png"
-    },
-    {
       "src": "/Rune/pulse-icon-claude.png",
-      "sizes": "512x512",
-      "type": "image/png"
+      "sizes": "180x180",
+      "type": "image/png",
+      "purpose": "any"
     }
   ]
 }

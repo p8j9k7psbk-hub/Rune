@@ -204,8 +204,7 @@ const defaultVoiceConfig: VoiceConfig = {
   autoPlay: false,
 };
 
-// API Key 跟 Claude Key 一样只放 sessionStorage，关掉浏览器就没了。
-// 其余几项不是密钥，随偏好一起持久化。
+// MiniMax Key 与通用 AI 配置保存在当前设备的 localStorage，不上传到 Rune 后端。
 const MINIMAX_KEY_STORAGE = "rune-minimax-key";
 
 function hexToBytes(hex: string) {
@@ -1613,10 +1612,10 @@ function SettingsView({
         || models.find((model) => model.id.includes("opus-4-6"))
         || models[0];
       if (preferred) setClaudeModel(preferred.id);
-      sessionStorage.setItem("rune-claude-key", claudeKey.trim());
-      sessionStorage.setItem("rune-ai-api-base", base);
-      sessionStorage.setItem("rune-claude-models", JSON.stringify(models));
-      if (preferred) sessionStorage.setItem("rune-claude-model", preferred.id);
+      localStorage.setItem("rune-claude-key", claudeKey.trim());
+      localStorage.setItem("rune-ai-api-base", base);
+      localStorage.setItem("rune-claude-models", JSON.stringify(models));
+      if (preferred) localStorage.setItem("rune-claude-model", preferred.id);
       setClaudeStatus(`连接成功，读取到 ${models.length} 个可用模型。`);
     } catch (error) {
       setClaudeStatus(`连接失败：${error instanceof Error ? error.message : "请检查 API Key。"}`);
@@ -1724,7 +1723,7 @@ function SettingsView({
       <section className="settings-section">
         <div className="settings-heading"><p className="eyebrow">AI connection</p><h2>通用 AI API</h2></div>
         <label className="field-label">API 地址<input type="url" value={aiApiBase} onChange={(event) => { setAiApiBase(event.target.value); setClaudeStatus(""); }} placeholder="https://api.example.com/v1" autoComplete="off" /></label>
-        <label className="field-label">API Key<input type="password" value={claudeKey} onChange={(event) => { setClaudeKey(event.target.value); setClaudeStatus(""); }} placeholder="sk-••••••••" autoComplete="off" /></label>
+        <label className="field-label">API Key<input type="password" value={claudeKey} onChange={(event) => { setClaudeKey(event.target.value); localStorage.setItem("rune-claude-key", event.target.value); setClaudeStatus(""); }} placeholder="sk-••••••••" autoComplete="off" /></label>
         <button className="solid-action" onClick={loadClaudeModels} disabled={loadingModels}>
           {loadingModels ? "正在读取…" : "读取这个 Key 的可用模型"}
         </button>
@@ -1741,7 +1740,7 @@ function SettingsView({
         <div className="settings-heading"><p className="eyebrow">Voice</p><h2>语音（MiniMax）</h2></div>
         <label className="field-label">API Key
           <input type="password" value={minimaxKey} autoComplete="off" placeholder="控制台 → 接口密钥 里创建"
-            onChange={(event) => { setMinimaxKey(event.target.value); sessionStorage.setItem(MINIMAX_KEY_STORAGE, event.target.value); setVoiceStatus(""); }} />
+            onChange={(event) => { setMinimaxKey(event.target.value); localStorage.setItem(MINIMAX_KEY_STORAGE, event.target.value); setVoiceStatus(""); }} />
         </label>
         <label className="field-label">Group ID
           <input value={voiceConfig.groupId} autoComplete="off" placeholder="控制台账户信息里那串数字（国际站账号留空）"
@@ -1782,7 +1781,7 @@ function SettingsView({
             <li><b className="ok">3</b><span>当前打开界面<small>{voiceChecks.surface}</small></span></li>
           </ul>
         </div>
-        <p className="setting-note">Key 只存在当前浏览器会话，关掉就没了；其余几项会保存在这台设备。<br/>{profile.name || "Rune"} 会自己判断什么时候用语音说话（情绪浓的时候），不是每条都念，所以不会一直烧额度。语音识别用系统自带能力，不额外收费。</p>
+        <p className="setting-note">Key 和语音配置会保存在这台设备，不会上传到 Rune 后端；清除网站数据或删除 PWA 时会一并移除。<br/>{profile.name || "Rune"} 会自己判断什么时候用语音说话（情绪浓的时候），不是每条都念，所以不会一直烧额度。语音识别用系统自带能力，不额外收费。</p>
       </section>
 
       <section className="settings-section">
@@ -1969,12 +1968,18 @@ export default function Pulse() {
           setProfile(storedProfile);
         }
         if (data.voiceConfig) setVoiceConfig({ ...defaultVoiceConfig, ...data.voiceConfig });
-      setMinimaxKey(sessionStorage.getItem(MINIMAX_KEY_STORAGE) || "");
       }
-      setClaudeKey(sessionStorage.getItem("rune-claude-key") || "");
-      setAiApiBase(sessionStorage.getItem("rune-ai-api-base") || "https://api.anthropic.com/v1");
-      setClaudeModel(sessionStorage.getItem("rune-claude-model") || "");
-      const storedModels = sessionStorage.getItem("rune-claude-models");
+      const migrateValue = (key: string, fallback = "") => {
+        const value = localStorage.getItem(key) ?? sessionStorage.getItem(key) ?? fallback;
+        if (value) localStorage.setItem(key, value);
+        sessionStorage.removeItem(key);
+        return value;
+      };
+      setMinimaxKey(migrateValue(MINIMAX_KEY_STORAGE));
+      setClaudeKey(migrateValue("rune-claude-key"));
+      setAiApiBase(migrateValue("rune-ai-api-base", "https://api.anthropic.com/v1"));
+      setClaudeModel(migrateValue("rune-claude-model"));
+      const storedModels = migrateValue("rune-claude-models");
       if (storedModels) setClaudeModels(JSON.parse(storedModels));
     } finally {
       setHydrated(true);
@@ -1989,12 +1994,12 @@ export default function Pulse() {
 
   useEffect(() => {
     if (typeof globalThis.document === "undefined" || !claudeModel) return;
-    sessionStorage.setItem("rune-claude-model", claudeModel);
+    localStorage.setItem("rune-claude-model", claudeModel);
   }, [claudeModel]);
 
   useEffect(() => {
     if (typeof globalThis.document === "undefined") return;
-    sessionStorage.setItem("rune-ai-api-base", normalizeAiApiBase(aiApiBase));
+    localStorage.setItem("rune-ai-api-base", normalizeAiApiBase(aiApiBase));
   }, [aiApiBase]);
 
   return (

@@ -124,7 +124,18 @@ function base64Url(bytes: Uint8Array) {
 async function startMcpOAuth(server: McpServer) {
   const endpoint = new URL(server.url);
   const metadataUrl = new URL("/.well-known/oauth-authorization-server", endpoint.origin);
-  const metadataResponse = await fetch(metadataUrl);
+  const oauthFetch = async (url: string | URL, init?: RequestInit) => {
+    try {
+      return await fetch(url, init);
+    } catch {
+      return fetch(`${DEFAULT_RUNE_API_BASE}/api/mcp-oauth/proxy`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ url: String(url), method: init?.method || "GET", body: typeof init?.body === "string" ? init.body : "" }),
+      });
+    }
+  };
+  const metadataResponse = await oauthFetch(metadataUrl);
   if (!metadataResponse.ok) throw new Error(`无法读取 OAuth 配置（HTTP ${metadataResponse.status}）`);
   const metadata = await metadataResponse.json();
   if (!metadata.authorization_endpoint || !metadata.token_endpoint || !metadata.registration_endpoint) throw new Error("这个 MCP 没有提供可自动跳转的 OAuth 动态注册信息。");
@@ -132,7 +143,7 @@ async function startMcpOAuth(server: McpServer) {
   const challenge = base64Url(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier))));
   const redirectUri = `${location.origin}${location.pathname}`;
   const state = base64Url(crypto.getRandomValues(new Uint8Array(24)));
-  const registrationResponse = await fetch(metadata.registration_endpoint, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ client_name: "Rune", redirect_uris: [redirectUri], token_endpoint_auth_method: "none", grant_types: ["authorization_code", "refresh_token"], response_types: ["code"] }) });
+  const registrationResponse = await oauthFetch(metadata.registration_endpoint, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ client_name: "Rune", redirect_uris: [redirectUri], token_endpoint_auth_method: "none", grant_types: ["authorization_code"], response_types: ["code"] }) });
   const registration = await registrationResponse.json();
   if (!registrationResponse.ok || !registration.client_id) throw new Error(registration.error_description || "OAuth 客户端自动注册失败。");
   const clientId = String(registration.client_id);
@@ -2213,6 +2224,7 @@ export default function Pulse() {
     const updateKeyboardCover = () => {
       const active = document.activeElement as HTMLElement | null;
       const isTyping = !!active && (active.tagName === "INPUT" || active.tagName === "TEXTAREA" || active.isContentEditable);
+      document.documentElement.toggleAttribute("data-keyboard-open", isTyping);
       if (!isTyping) layoutHeight = Math.max(window.innerHeight, viewport.height);
       const covered = Math.max(0, layoutHeight - viewport.height - viewport.offsetTop);
       document.documentElement.style.setProperty("--keyboard-cover", `${covered}px`);
@@ -2228,6 +2240,7 @@ export default function Pulse() {
       document.removeEventListener("focusin", updateKeyboardCover);
       document.removeEventListener("focusout", updateKeyboardCover);
       document.documentElement.style.removeProperty("--keyboard-cover");
+      document.documentElement.removeAttribute("data-keyboard-open");
     };
   }, []);
 
@@ -2287,11 +2300,10 @@ export default function Pulse() {
     if (!code || !pendingRaw) return;
     const pending = JSON.parse(pendingRaw) as { serverId: number; verifier: string; state: string; redirectUri: string; tokenEndpoint: string; clientId: string };
     if (!returnedState || returnedState !== pending.state) return;
-    fetch(pending.tokenEndpoint, {
-      method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ grant_type: "authorization_code", code, client_id: pending.clientId, redirect_uri: pending.redirectUri, code_verifier: pending.verifier }),
-    }).then(async (response) => {
+    const tokenBody = new URLSearchParams({ grant_type: "authorization_code", code, client_id: pending.clientId, redirect_uri: pending.redirectUri, code_verifier: pending.verifier }).toString();
+    fetch(pending.tokenEndpoint, { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: tokenBody }).catch(() => fetch(`${DEFAULT_RUNE_API_BASE}/api/mcp-oauth/proxy`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ url: pending.tokenEndpoint, method: "POST", body: tokenBody, contentType: "application/x-www-form-urlencoded" }),
+    })).then(async (response) => {
       const data = await response.json();
       if (!response.ok || !data.access_token) throw new Error(data.error_description || "OAuth Token 交换失败");
       setMcpServers((items) => items.map((item) => item.id === pending.serverId ? { ...item, token: data.access_token, enabled: true, requiresAuth: true } : item));

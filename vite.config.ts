@@ -44,9 +44,8 @@ export default defineConfig(async () => {
   const { cloudflare } = await import("@cloudflare/vite-plugin");
 
   return {
-    // GitHub Pages 部署在 /Rune/ 子路径下，资源基路径必须带上前缀，
-    // 否则运行时会去 /assets/ 拉取并 404。
-    base: "/Rune/",
+    // Relative assets resolve from both /Rune/ on GitHub Pages and / on the custom domain.
+    base: "./",
     server: isCodexSeatbeltSandbox
       ? { watch: { useFsEvents: false, usePolling: true } }
       : undefined,

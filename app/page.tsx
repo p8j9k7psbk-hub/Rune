@@ -7,12 +7,13 @@ type Tab = "home" | "chat" | "diary" | "settings";
 type ThemeName = "paper" | "sage" | "ink" | "claude";
 type Anniversary = { id: number; name: string; date: string };
 type HealthSummary = { steps?: number; heartRate?: number; importedAt?: string; week?: number[] };
-type McpServer = { id: number; name: string; url: string; enabled: boolean; requiresAuth?: boolean; token?: string };
+type McpServer = { id: number; name: string; url: string; enabled: boolean; authMode?: "none" | "oauth"; requiresAuth?: boolean; token?: string; clientId?: string };
 type McpTool = { name: string; description?: string; inputSchema?: Record<string, unknown> };
 type Todo = { id: number; text: string; meta: string; done: boolean };
 type ClaudeModel = { id: string; display_name: string; created_at?: string };
 type ChatAttachment = { id: number; name: string; kind: "image" | "text"; mediaType: string; data: string };
-type ChatMessage = { role: "user" | "assistant"; text: string; attachments?: ChatAttachment[]; voice?: boolean };
+type ToolTrace = { name: string; server?: string; input?: unknown; output?: unknown; status: "完成" | "失败" | "等待确认" };
+type ChatMessage = { role: "user" | "assistant"; text: string; attachments?: ChatAttachment[]; voice?: boolean; reasoning?: string; toolTraces?: ToolTrace[] };
 type RuneAction = { id: string; name: "add_todo" | "write_diary" | "set_home_message" | "create_reminder"; input: Record<string, string>; status: "pending" | "done" | "cancelled" };
 type Profile = {
   name: string;         // Rune 的昵称
@@ -113,6 +114,28 @@ async function notifyMcpInitialized(server: McpServer, sessionId?: string) {
     },
     body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }),
   });
+}
+
+function base64Url(bytes: Uint8Array) {
+  return btoa(String.fromCharCode(...bytes)).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+}
+
+async function startMcpOAuth(server: McpServer) {
+  if (!server.clientId?.trim()) throw new Error("OAuth MCP 需要填写 Client ID。");
+  const endpoint = new URL(server.url);
+  const metadataUrl = new URL("/.well-known/oauth-authorization-server", endpoint.origin);
+  const metadataResponse = await fetch(metadataUrl);
+  if (!metadataResponse.ok) throw new Error(`无法读取 OAuth 配置（HTTP ${metadataResponse.status}）`);
+  const metadata = await metadataResponse.json();
+  if (!metadata.authorization_endpoint || !metadata.token_endpoint) throw new Error("OAuth 配置缺少授权或 Token 地址。");
+  const verifier = base64Url(crypto.getRandomValues(new Uint8Array(48)));
+  const challenge = base64Url(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier))));
+  const redirectUri = `${location.origin}${location.pathname}`;
+  const state = base64Url(crypto.getRandomValues(new Uint8Array(24)));
+  localStorage.setItem("rune-mcp-oauth-pending", JSON.stringify({ serverId: server.id, verifier, state, redirectUri, tokenEndpoint: metadata.token_endpoint }));
+  const authorize = new URL(metadata.authorization_endpoint);
+  authorize.search = new URLSearchParams({ response_type: "code", client_id: server.clientId, redirect_uri: redirectUri, code_challenge: challenge, code_challenge_method: "S256", state }).toString();
+  location.assign(authorize.href);
 }
 
 type StoredConversation = { id: number; title: string; updatedAt: number; messages: ChatMessage[] };
@@ -370,6 +393,13 @@ function runeApiBase() {
 function runeApiConfigured() {
   if (typeof globalThis.location === "undefined") return false;
   return Boolean(runeApiBase()) || SAME_ORIGIN_API_HOSTS.includes(globalThis.location.hostname);
+}
+
+async function syncNotificationProfile(profile: Profile) {
+  if (!("serviceWorker" in navigator)) return;
+  const registration = await navigator.serviceWorker.ready.catch(() => null);
+  const worker = registration?.active || navigator.serviceWorker.controller;
+  worker?.postMessage({ type: "RUNE_NOTIFICATION_PROFILE", name: profile.name || "Rune", avatar: profile.avatar || "" });
 }
 
 // 后端可能返回 HTML（登录墙、404 页），直接 .json() 会抛出难懂的 SyntaxError。
@@ -1154,7 +1184,7 @@ function ChatView({
         const response = await fetch(`${runeApiBase()}/api/reminders`, {
           method: "POST",
           headers: { "content-type": "application/json", "x-rune-device": deviceId, "x-rune-token": deviceToken },
-          body: JSON.stringify({ title: action.input.title || "Rune 提醒", scheduledAt: action.input.datetime }),
+          body: JSON.stringify({ title: action.input.title || "提醒", content: action.input.content || action.input.title || "你有一个新的提醒。", scheduledAt: action.input.datetime, runeName: profile.name || "Rune", runeAvatar: profile.avatar || "", barkServer: localStorage.getItem("rune-bark-server") || "", barkKey: localStorage.getItem("rune-bark-key") || "" }),
         });
         if (!response.ok) throw new Error(`提醒已保存在本机，但后台同步失败（HTTP ${response.status}）。`);
       }
@@ -1187,7 +1217,7 @@ function ChatView({
         { name: "add_todo", description: "在 Rune Diary 的指定日期添加待办。任何写入都必须先向用户展示确认。", input_schema: { type: "object", properties: { date: { type: "string", description: "YYYY-MM-DD" }, text: { type: "string" } }, required: ["date", "text"] } },
         { name: "write_diary", description: "在 Rune Diary 的指定日期写入日记。任何写入都必须先向用户展示确认。", input_schema: { type: "object", properties: { date: { type: "string", description: "YYYY-MM-DD" }, content: { type: "string" } }, required: ["date", "content"] } },
         { name: "set_home_message", description: "修改 Rune 首页顶部的主要问候文字。", input_schema: { type: "object", properties: { message: { type: "string" } }, required: ["message"] } },
-        { name: "create_reminder", description: "创建一个 Rune 定时提醒。", input_schema: { type: "object", properties: { title: { type: "string" }, datetime: { type: "string", description: "带时区的 ISO 8601 时间" } }, required: ["title", "datetime"] } },
+        { name: "create_reminder", description: "创建 Rune 定时提醒。根据对话语气自行编辑简洁自然的通知标题与正文。", input_schema: { type: "object", properties: { title: { type: "string", description: "简短通知标题" }, content: { type: "string", description: "由你编辑的通知正文" }, datetime: { type: "string", description: "带时区的 ISO 8601 时间" } }, required: ["title", "content", "datetime"] } },
       ];
       const apiBase = normalizeAiApiBase(aiApiBase);
       const protocol = apiProtocolFor(apiBase);
@@ -1257,8 +1287,11 @@ ${voiceReady ? "当这句话情绪比较浓、更适合说出来而不是打字�
       });
       let data = await response.json();
       if (!response.ok) throw new Error(data?.error?.message || "AI API 请求失败");
+      const toolTraces: ToolTrace[] = [];
+      let reasoning = "";
       if (protocol === "openai") {
         const assistantMessage = data.choices?.[0]?.message;
+        reasoning = String(assistantMessage?.reasoning_content || assistantMessage?.reasoning || "").trim();
         const externalCalls = (assistantMessage?.tool_calls || []).filter((call: { function?: { name?: string } }) => mcpToolMap.has(call.function?.name || ""));
         if (externalCalls.length) {
           const toolResults = [];
@@ -1269,8 +1302,11 @@ ${voiceReady ? "当这句话情绪比较浓、更适合说出来而不是打字�
             try {
               const called = await callMcpRpc(mapped.server, "tools/call", { name: mapped.tool.name, arguments: args }, mapped.sessionId);
               toolResults.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify(called.result ?? {}) });
+              toolTraces.push({ name: mapped.tool.name, server: mapped.server.name, input: args, output: called.result ?? {}, status: "完成" });
             } catch (error) {
-              toolResults.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify({ error: error instanceof Error ? error.message : "MCP 调用失败" }) });
+              const message = error instanceof Error ? error.message : "MCP 调用失败";
+              toolResults.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify({ error: message }) });
+              toolTraces.push({ name: mapped.tool.name, server: mapped.server.name, input: args, output: message, status: "失败" });
             }
           }
           const followup = await fetch(endpoint, {
@@ -1280,6 +1316,17 @@ ${voiceReady ? "当这句话情绪比较浓、更适合说出来而不是打字�
           });
           data = await followup.json();
           if (!followup.ok) throw new Error(data?.error?.message || "MCP 结果回传模型失败");
+          const followupMessage = data.choices?.[0]?.message;
+          reasoning = String(followupMessage?.reasoning_content || followupMessage?.reasoning || reasoning).trim();
+        }
+      } else {
+        reasoning = (data.content || []).filter((block: { type?: string }) => block.type === "thinking" || block.type === "reasoning").map((block: { thinking?: string; text?: string; summary?: string }) => block.thinking || block.summary || block.text || "").filter(Boolean).join("\n").trim();
+        for (const block of (data.content || [])) {
+          if (block.type === "mcp_tool_use") toolTraces.push({ name: String(block.name || "MCP tool"), server: String(block.server_name || "MCP"), input: block.input, status: "完成" });
+          if (block.type === "mcp_tool_result") {
+            const trace = [...toolTraces].reverse().find((item) => item.output === undefined);
+            if (trace) trace.output = block.content;
+          }
         }
       }
       const reply = protocol === "anthropic"
@@ -1292,12 +1339,13 @@ ${voiceReady ? "当这句话情绪比较浓、更适合说出来而不是打字�
             try { input = JSON.parse(call.function.arguments || "{}"); } catch { input = {}; }
             return { id: call.id, name: call.function.name, input, status: "pending" as const };
           });
+      for (const action of proposed) toolTraces.push({ name: action.name, server: "Rune", input: action.input, status: "等待确认" });
       // Rune 用 [[voice]] 标记"这句想说出来"，剥掉标记并记成语音消息
       const wantsVoice = VOICE_MARK.test(reply);
       const spoken = reply.replace(VOICE_MARK, "").trim();
       const finalReply = spoken || reply || (proposed.length ? "我准备执行下面的操作，请你确认。" : "我在。");
       const replyIndex = nextMessages.length;
-      messagesRef.current = [...nextMessages, { role: "assistant", text: finalReply, voice: wantsVoice && voiceReady }];
+      messagesRef.current = [...nextMessages, { role: "assistant", text: finalReply, voice: wantsVoice && voiceReady, reasoning: reasoning || undefined, toolTraces: toolTraces.length ? toolTraces : undefined }];
       setMessages(messagesRef.current);
       // 首页那张卡片跟着对话走：每次回复都同步过去，附带时间戳。
       if (finalReply) setHomeMessage(finalReply);
@@ -1420,6 +1468,19 @@ ${voiceReady ? "当这句话情绪比较浓、更适合说出来而不是打字�
               ) : (
                 message.text && <p>{message.text}</p>
               )}
+              {message.role === "assistant" && (!!message.reasoning || !!message.toolTraces?.length) && (
+                <details className="message-trace">
+                  <summary>{message.reasoning ? "思考摘要" : "工具调用"}{message.toolTraces?.length ? ` · ${message.toolTraces.length} 条` : ""}</summary>
+                  {message.reasoning && <section><b>模型返回的思考摘要</b><p>{message.reasoning}</p></section>}
+                  {message.toolTraces?.map((trace, traceIndex) => (
+                    <section className="tool-trace" key={`${trace.name}-${traceIndex}`}>
+                      <b>{trace.server ? `${trace.server} · ` : ""}{trace.name}<em>{trace.status}</em></b>
+                      {trace.input !== undefined && <pre>参数\n{JSON.stringify(trace.input, null, 2)}</pre>}
+                      {trace.output !== undefined && <pre>结果\n{typeof trace.output === "string" ? trace.output : JSON.stringify(trace.output, null, 2)}</pre>}
+                    </section>
+                  ))}
+                </details>
+              )}
             </div>
           </article>
         ))}
@@ -1444,7 +1505,7 @@ ${voiceReady ? "当这句话情绪比较浓、更适合说出来而不是打字�
 
       <div className="claude-composer">
         {!!attachments.length && <div className="attachment-tray">{attachments.map((attachment) => <span key={attachment.id}>{attachment.kind === "image" ? "▧" : "≡"} {attachment.name}<button onClick={() => setAttachments(attachments.filter((item) => item.id !== attachment.id))} aria-label={`移除 ${attachment.name}`}>×</button></span>)}</div>}
-        <textarea
+        <div className="composer-input-row"><textarea
           value={input}
           onChange={(event) => setInput(event.target.value)}
           onKeyDown={(event) => {
@@ -1456,9 +1517,9 @@ ${voiceReady ? "当这句话情绪比较浓、更适合说出来而不是打字�
           placeholder={`和 ${profile.name || "Rune"} 说点什么…`}
           aria-label="消息内容"
           rows={1}
-        />
+        /><button className="send-button" onClick={() => sendMessage()} disabled={(!input.trim() && !attachments.length) || sending} aria-label="发送消息">↑</button></div>
         <input ref={attachmentRef} className="hidden-file" type="file" multiple accept="image/*,.txt,.md,.json,.csv,text/*" onChange={(event) => addAttachments(event.target.files)} />
-        <div>
+        <div className="composer-tools">
           <button className="attach-button" onClick={() => attachmentRef.current?.click()} aria-label="添加附件">＋</button>
           {(
             <button
@@ -1472,7 +1533,6 @@ ${voiceReady ? "当这句话情绪比较浓、更适合说出来而不是打字�
               {claudeModels.map((model) => <option key={model.id} value={model.id}>{model.display_name || model.id}</option>)}
             </select>
           ) : <small>{selectedModel?.display_name || "AI"}</small>}
-          <button className="send-button" onClick={() => sendMessage()} disabled={(!input.trim() && !attachments.length) || sending} aria-label="发送消息">↑</button>
         </div>
       </div>
     </main>
@@ -1533,7 +1593,8 @@ function SettingsView({
   const fileRef = useRef<HTMLInputElement>(null);
   const [claudeStatus, setClaudeStatus] = useState("");
   const [loadingModels, setLoadingModels] = useState(false);
-  const [newMcp, setNewMcp] = useState({ name: "", url: "", token: "" });
+  const [newMcp, setNewMcp] = useState({ name: "", url: "", authMode: "none" as "none" | "oauth", clientId: "" });
+  const [mcpStatus, setMcpStatus] = useState("");
   const [avatarNote, setAvatarNote] = useState("");
   const voiceReady = Boolean(minimaxKey && voiceConfig.voiceId);
   const [voiceStatus, setVoiceStatus] = useState("");
@@ -1616,11 +1677,15 @@ function SettingsView({
   const [enablingNotifications, setEnablingNotifications] = useState(false);
   const [apiBase, setApiBase] = useState("");
   const [apiConfigured, setApiConfigured] = useState(true);
+  const [barkServer, setBarkServer] = useState("https://api.day.app");
+  const [barkKey, setBarkKey] = useState("");
 
   useEffect(() => {
     if (typeof globalThis.document === "undefined") return;
     setApiBase(localStorage.getItem(RUNE_API_STORAGE_KEY) ?? DEFAULT_RUNE_API_BASE);
     setApiConfigured(runeApiConfigured());
+    setBarkServer(localStorage.getItem("rune-bark-server") || "https://api.day.app");
+    setBarkKey(localStorage.getItem("rune-bark-key") || "");
   }, []);
 
   const saveApiBase = (value: string) => {
@@ -1722,8 +1787,10 @@ function SettingsView({
 
   const addMcp = () => {
     if (!newMcp.name.trim() || !newMcp.url.trim()) return;
-    setMcpServers([...mcpServers, { id: Date.now(), name: newMcp.name.trim(), url: newMcp.url.trim(), token: newMcp.token.trim(), enabled: true, requiresAuth: Boolean(newMcp.token.trim()) }]);
-    setNewMcp({ name: "", url: "", token: "" });
+    const server: McpServer = { id: Date.now(), name: newMcp.name.trim(), url: newMcp.url.trim(), authMode: newMcp.authMode, clientId: newMcp.clientId.trim(), enabled: newMcp.authMode === "none", requiresAuth: newMcp.authMode === "oauth" };
+    setMcpServers([...mcpServers, server]);
+    setNewMcp({ name: "", url: "", authMode: "none", clientId: "" });
+    if (server.authMode === "oauth") startMcpOAuth(server).catch((error) => setMcpStatus(error instanceof Error ? error.message : "OAuth 跳转失败"));
   };
 
   const loadClaudeModels = async () => {
@@ -1791,8 +1858,15 @@ function SettingsView({
         localStorage.setItem("rune-device-token", deviceToken);
       }
 
-      const registration = await navigator.serviceWorker.register("./sw.js");
-      const keyResponse = await fetch(`${runeApiBase()}/api/push/key`);
+      const registration = await navigator.serviceWorker.register("./sw.js", { updateViaCache: "none" });
+      await registration.update();
+      await syncNotificationProfile(profile);
+      let keyResponse: Response;
+      try {
+        keyResponse = await fetch(`${runeApiBase()}/api/push/key`);
+      } catch {
+        throw new Error("读取推送密钥失败：通知后端目前无法连接。请检查提醒后端地址，或重新部署 rune-push Worker；这就是 Safari 显示 Load failed 的原因。");
+      }
       const keyData = await readJson(keyResponse, "读取推送密钥");
       if (!keyData.publicKey) throw new Error("读取推送密钥失败：后端还没有配置 VAPID 公钥。");
       const subscription = await registration.pushManager.subscribe({
@@ -1937,7 +2011,7 @@ function SettingsView({
           {mcpServers.map((server) => (
             <div className="mcp-row" key={server.id}>
               <button className={server.enabled ? "mini-switch on" : "mini-switch"} onClick={() => setMcpServers(mcpServers.map((item) => item.id === server.id ? { ...item, enabled: !item.enabled } : item))}><i /></button>
-              <span><strong>{server.name}</strong><small>{server.url}</small><input className="mcp-token" type="password" value={server.token || ""} onChange={(event) => setMcpServers(mcpServers.map((item) => item.id === server.id ? { ...item, token: event.target.value, requiresAuth: Boolean(event.target.value) } : item))} placeholder="OAuth / Bearer Token（可选）" aria-label={`${server.name} MCP Token`} /></span>
+              <span><strong>{server.name}</strong><small>{server.url} · {server.authMode === "oauth" ? (server.token ? "OAuth 已连接" : "OAuth 未连接") : "无 OAuth"}</small>{server.authMode === "oauth" && !server.token && <button className="mcp-oauth-button" onClick={() => startMcpOAuth(server).catch((error) => setMcpStatus(error instanceof Error ? error.message : "OAuth 跳转失败"))}>前往验证</button>}</span>
               <button className="remove-row" onClick={() => setMcpServers(mcpServers.filter((item) => item.id !== server.id))}>×</button>
             </div>
           ))}
@@ -1945,9 +2019,11 @@ function SettingsView({
         <div className="mcp-add">
           <input value={newMcp.name} onChange={(event) => setNewMcp({ ...newMcp, name: event.target.value })} placeholder="名称，如 Notion" />
           <input value={newMcp.url} onChange={(event) => setNewMcp({ ...newMcp, url: event.target.value })} placeholder="https://…/mcp" />
-          <input type="password" value={newMcp.token} onChange={(event) => setNewMcp({ ...newMcp, token: event.target.value })} placeholder="OAuth / Bearer Token（可选）" />
+          <select value={newMcp.authMode} onChange={(event) => setNewMcp({ ...newMcp, authMode: event.target.value as "none" | "oauth" })}><option value="none">无 OAuth</option><option value="oauth">OAuth</option></select>
+          {newMcp.authMode === "oauth" && <input value={newMcp.clientId} onChange={(event) => setNewMcp({ ...newMcp, clientId: event.target.value })} placeholder="OAuth Client ID" />}
           <button className="outline-action" onClick={addMcp}>＋ 添加 MCP</button>
         </div>
+        {mcpStatus && <p className="error-note">{mcpStatus}</p>}
       </section>
         </div>
       </details>
@@ -2009,12 +2085,18 @@ function SettingsView({
             autoComplete="off"
           />
         </label>
+        <label className="field-label">Bark 服务器
+          <input type="url" inputMode="url" value={barkServer} onChange={(event) => { setBarkServer(event.target.value); localStorage.setItem("rune-bark-server", event.target.value.trim().replace(/\/+$/, "")); }} placeholder="https://api.day.app" autoComplete="off" />
+        </label>
+        <label className="field-label">Bark Device Key
+          <input type="password" value={barkKey} onChange={(event) => { setBarkKey(event.target.value); localStorage.setItem("rune-bark-key", event.target.value.trim()); }} placeholder="Bark App 中显示的设备 Key" autoComplete="off" />
+        </label>
         <button className="solid-action" onClick={enableNotifications} disabled={enablingNotifications || !apiConfigured}>
           {enablingNotifications ? "正在连接…" : "开启通知"}
         </button>
         {notificationStatus && <p className={notificationStatus.startsWith("通知已经") ? "success-note" : "error-note"}>{notificationStatus}</p>}
         {!apiConfigured && <p className="setting-note">后端地址留空了，所以通知开不了。默认地址是 <code>{DEFAULT_RUNE_API_BASE}</code>，清空后可以填回去。</p>}
-        <p className="setting-note">iPhone 需要先通过 Safari 把 Rune 添加到主屏幕，再从主屏幕打开 Rune 并点击此按钮授权。后端只接受 GitHub Pages 那个域名的请求，本地预览会被 CORS 拦掉，属于正常。</p>
+        <p className="setting-note">填写 Bark 后，Rune 创建提醒时会把 LLM 编辑的标题和正文交给后端，到点后通过 Bark 发送；未填写时使用系统 Web Push。通知发送者名称与头像跟随 Rune 设置。Bark Key 只保存在本机，并在创建提醒时发给你配置的提醒后端。</p>
       </section>
         </div>
       </details>
@@ -2139,6 +2221,34 @@ export default function Pulse() {
     if (!hydrated) return;
     localStorage.setItem("pulse-preferences", JSON.stringify({ theme, anniversaries, health, mcpServers, metDate, homeMessage, homeMessageAt, profile, voiceConfig }));
   }, [theme, anniversaries, health, mcpServers, metDate, homeMessage, homeMessageAt, profile, hydrated]);
+
+  useEffect(() => {
+    if (hydrated) syncNotificationProfile(profile).catch(() => undefined);
+  }, [profile.name, profile.avatar, hydrated]);
+
+  useEffect(() => {
+    if (!hydrated || typeof location === "undefined") return;
+    const params = new URLSearchParams(location.search);
+    const code = params.get("code");
+    const returnedState = params.get("state");
+    const pendingRaw = localStorage.getItem("rune-mcp-oauth-pending");
+    if (!code || !pendingRaw) return;
+    const pending = JSON.parse(pendingRaw) as { serverId: number; verifier: string; state: string; redirectUri: string; tokenEndpoint: string };
+    if (!returnedState || returnedState !== pending.state) return;
+    const server = mcpServers.find((item) => item.id === pending.serverId);
+    if (!server?.clientId) return;
+    fetch(pending.tokenEndpoint, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ grant_type: "authorization_code", code, client_id: server.clientId, redirect_uri: pending.redirectUri, code_verifier: pending.verifier }),
+    }).then(async (response) => {
+      const data = await response.json();
+      if (!response.ok || !data.access_token) throw new Error(data.error_description || "OAuth Token 交换失败");
+      setMcpServers((items) => items.map((item) => item.id === pending.serverId ? { ...item, token: data.access_token, enabled: true, requiresAuth: true } : item));
+      localStorage.removeItem("rune-mcp-oauth-pending");
+      history.replaceState({}, "", location.pathname);
+    }).catch(() => undefined);
+  }, [hydrated]);
 
   useEffect(() => {
     if (typeof globalThis.document === "undefined" || !claudeModel) return;

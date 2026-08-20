@@ -54,6 +54,9 @@ test("keeps required AI, voice, and mobile behavior", async () => {
   assert.match(page, /runVoiceChecks/);
   assert.match(page, /requestMicrophonePermission/);
   assert.match(page, /messagesRef\.current/);
+  assert.match(page, /messageStreamRef/);
+  assert.match(page, /rows=\{1\}/);
+  assert.match(page, /claude-composer[\s\S]*chat-model-select/);
   assert.match(page, /释放扬声器音频会话/);
   assert.match(page, /正在重试/);
   assert.match(page, /请求权限/);

@@ -1,6 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 
 type ReminderInput = { title?: string; content?: string; scheduledAt?: string; runeName?: string; runeAvatar?: string; barkServer?: string; barkKey?: string; publicBase?: string; deviceId?: string };
+type OAuthProxyInput = { url?: string; method?: string; body?: string; contentType?: string };
 
 const json = (data: unknown, status = 200, headers?: HeadersInit) => new Response(JSON.stringify(data), { status, headers: { "content-type": "application/json; charset=utf-8", ...headers } });
 const randomToken = () => btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32)))).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
@@ -98,6 +99,16 @@ export default {
     if (request.method === "OPTIONS") return new Response(null, { headers });
     const url = new URL(request.url);
     if (url.pathname === "/health") return json({ ok: true, bark: true }, 200, headers);
+    if (url.pathname === "/api/mcp-oauth/proxy" && request.method === "POST") {
+      const input = await request.json<OAuthProxyInput>();
+      let upstream: URL;
+      try { upstream = new URL(input.url || ""); } catch { return json({ error: "OAuth 地址无效" }, 400, headers); }
+      const allowedPaths = new Set(["/.well-known/oauth-authorization-server", "/.well-known/oauth-protected-resource", "/.well-known/oauth-protected-resource/mcp", "/oauth/register", "/oauth/token"]);
+      if (upstream.protocol !== "https:" || upstream.hostname !== "galatea.abysslumina.com" || !allowedPaths.has(upstream.pathname)) return json({ error: "OAuth 地址不在允许范围" }, 403, headers);
+      const method = input.method === "POST" ? "POST" : "GET";
+      const response = await fetch(upstream, { method, headers: method === "POST" ? { "content-type": input.contentType || "application/json" } : undefined, body: method === "POST" ? input.body || "" : undefined });
+      return new Response(response.body, { status: response.status, headers: { ...headers, "content-type": response.headers.get("content-type") || "application/json; charset=utf-8" } });
+    }
     if (url.pathname === "/api/devices" && request.method === "POST") {
       const deviceId = crypto.randomUUID();
       const response = await env.DEVICES.getByName(deviceId).fetch("https://device/register", { method: "POST" });

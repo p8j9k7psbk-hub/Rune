@@ -212,7 +212,7 @@ h1 { font-family:var(--serif); font-weight:500; letter-spacing:-.035em; }
 .diary-page .journal-entry > p:last-child { font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Helvetica Neue",sans-serif; font-size:13px; line-height:1.65; }
 .diary-page .diary-editor textarea { border-radius:11px; background:color-mix(in srgb,var(--ink) 6%,transparent); color:var(--ink); font-family:inherit; }
 
-.claude-chat-page { min-height:calc(100svh - 38px); display:flex; flex-direction:column; padding:0 18px 176px; background:linear-gradient(180deg,rgba(248,247,243,.48),transparent 42%); }
+.claude-chat-page { height:calc(100svh - max(38px,env(safe-area-inset-top))); min-height:0; display:flex; flex-direction:column; overflow:hidden; padding:0 18px 82px; background:linear-gradient(180deg,rgba(248,247,243,.48),transparent 42%); }
 .claude-chat-header { display:grid; grid-template-columns:27px 1fr auto auto auto; gap:7px; align-items:center; min-height:52px; border-bottom:1px solid var(--border); }
 .claude-chat-header > div { display:flex; align-items:center; gap:9px; min-width:0; }
 .claude-chat-header strong { font-family:var(--serif); font-size:16px; font-weight:600; }
@@ -233,8 +233,9 @@ h1 { font-family:var(--serif); font-weight:500; letter-spacing:-.035em; }
 .history-open small { color:var(--muted); font-size:10px; }
 .history-delete { flex:none; width:30px; height:30px; margin-right:8px; border:0; border-radius:50%; background:transparent; color:var(--muted); font-size:16px; cursor:pointer; }
 .chat-notice { position:fixed; z-index:30; top:54px; left:50%; transform:translateX(-50%); padding:7px 11px; border:1px solid var(--border); border-radius:10px; background:rgba(255,254,250,.94); color:var(--ink); box-shadow:0 6px 18px rgba(35,31,27,.1); font-size:10px; white-space:nowrap; }
-.chat-model-select { width:auto; max-width:180px; height:27px; padding:0 22px 0 8px; border:0; border-radius:8px; background:rgba(118,118,128,.08); color:var(--muted); font-size:9px; outline:none; }
-.claude-message-stream { flex:1; display:flex; flex-direction:column; gap:18px; padding:24px 0 8px; }
+.chat-model-select { flex:1; min-width:0; max-width:170px; height:26px; padding:0 22px 0 8px; border:0; border-radius:8px; background:rgba(118,118,128,.08); color:var(--muted); font-size:9px; outline:none; }
+.claude-message-stream { flex:1; min-height:0; overflow-x:hidden; overflow-y:auto; overscroll-behavior:contain; -webkit-overflow-scrolling:touch; display:flex; flex-direction:column; gap:18px; padding:18px 0 112px; scrollbar-width:none; }
+.claude-message-stream::-webkit-scrollbar { display:none; }
 .claude-message-stream.empty { justify-content:center; }
 .claude-welcome { display:flex; flex-direction:column; align-items:center; text-align:center; gap:9px; transform:translateY(-28px); }
 .claude-welcome > img { width:54px; height:54px; object-fit:contain; border-radius:16px; box-shadow:0 6px 22px rgba(35,31,27,.1); }
@@ -259,15 +260,15 @@ h1 { font-family:var(--serif); font-weight:500; letter-spacing:-.035em; }
 .action-confirm-card > div button { padding:7px 11px; border:1px solid var(--border); border-radius:9px; background:var(--surface-strong); color:var(--ink); cursor:pointer; font-size:10px; }
 .action-confirm-card > div button:last-child { border-color:#d97757; background:#d97757; color:#fff; }
 .action-confirm-card > em { display:block; margin-top:8px; color:var(--muted); font-size:9px; font-style:normal; }
-.claude-composer { position:fixed; z-index:22; left:50%; transform:translateX(-50%); bottom:87px; width:min(402px,calc(100% - 28px)); padding:11px 12px 9px; border:1px solid rgba(60,55,49,.16); border-radius:20px; background:rgba(255,254,250,.94); box-shadow:0 12px 36px rgba(35,31,27,.13); backdrop-filter:blur(24px); }
+.claude-composer { position:fixed; z-index:22; left:50%; transform:translateX(-50%); bottom:87px; width:min(402px,calc(100% - 28px)); padding:7px 9px; border:1px solid rgba(60,55,49,.16); border-radius:17px; background:rgba(255,254,250,.94); box-shadow:0 10px 28px rgba(35,31,27,.12); backdrop-filter:blur(24px); }
 .attachment-tray { display:flex; gap:6px; overflow-x:auto; padding:0 0 8px; }
 .attachment-tray > span { display:flex; align-items:center; gap:5px; max-width:220px; flex:none; padding:5px 7px; border-radius:8px; background:rgba(118,118,128,.1); font-size:9px; white-space:nowrap; }
 .attachment-tray > span button { width:17px; height:17px; padding:0; border:0; border-radius:50%; background:rgba(60,55,49,.12); color:var(--ink); cursor:pointer; line-height:1; }
-.claude-composer textarea { width:100%; min-height:52px; max-height:130px; resize:none; border:0; outline:0; background:transparent; color:#292621; font:12px/1.55 inherit; }
+.claude-composer textarea { width:100%; min-height:34px; max-height:88px; resize:none; border:0; outline:0; padding:5px 4px 3px; background:transparent; color:#292621; font:12px/1.45 inherit; }
 .claude-composer textarea::placeholder { color:#99938b; }
 .claude-composer > div { display:flex; align-items:center; gap:8px; }
 .claude-composer small { flex:1; overflow:hidden; color:#8e8880; font-size:9px; white-space:nowrap; text-overflow:ellipsis; }
-.attach-button,.send-button { width:30px; height:30px; border-radius:50%; cursor:pointer; }
+.attach-button,.send-button { width:28px; height:28px; border-radius:50%; cursor:pointer; }
 .attach-button { border:1px solid rgba(60,55,49,.15); background:transparent; color:#4d4943; font-size:18px; }
 .send-button { border:0; background:#d97757; color:#fff; font-size:17px; }
 .send-button:disabled { opacity:.3; cursor:default; }

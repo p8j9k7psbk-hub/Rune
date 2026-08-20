@@ -55,6 +55,9 @@ test("keeps required AI, voice, and mobile behavior", async () => {
   assert.match(page, /requestMicrophonePermission/);
   assert.match(page, /请求权限/);
   assert.match(page, /globalThis\.isSecureContext/);
+  assert.match(page, /localStorage\.setItem\("rune-claude-key"/);
+  assert.match(page, /localStorage\.setItem\(MINIMAX_KEY_STORAGE/);
+  assert.match(page, /const migrateValue =/);
   assert.match(page, /麦克风权限/);
   assert.match(page, /MiniMax 可否调用/);
   assert.match(page, /当前打开界面/);

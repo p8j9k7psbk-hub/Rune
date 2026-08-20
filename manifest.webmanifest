@@ -2,14 +2,14 @@
   "name": "Rune",
   "short_name": "Rune",
   "description": "私人生活空间",
-  "start_url": "/Rune/",
-  "scope": "/Rune/",
+  "start_url": "./",
+  "scope": "./",
   "display": "standalone",
   "background_color": "#efeee8",
   "theme_color": "#efeee8",
   "icons": [
     {
-      "src": "/Rune/pulse-icon-claude.png",
+      "src": "./pulse-icon-claude.png",
       "sizes": "180x180",
       "type": "image/png",
       "purpose": "any"

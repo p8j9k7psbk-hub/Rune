@@ -422,6 +422,20 @@ async function readJson(response: Response, what: string) {
   return data;
 }
 
+async function ensureRuneDevice() {
+  let deviceId = localStorage.getItem("rune-device-id") || "";
+  let deviceToken = localStorage.getItem("rune-device-token") || "";
+  if (!deviceId || !deviceToken) {
+    const device = await readJson(await fetch(`${runeApiBase()}/api/devices`, { method: "POST" }), "注册设备");
+    deviceId = String(device.deviceId || "");
+    deviceToken = String(device.token || "");
+    if (!deviceId || !deviceToken) throw new Error("注册设备失败。");
+    localStorage.setItem("rune-device-id", deviceId);
+    localStorage.setItem("rune-device-token", deviceToken);
+  }
+  return { deviceId, deviceToken };
+}
+
 function decodeBase64Url(value: string) {
   const padded = `${value.replaceAll("-", "+").replaceAll("_", "/")}${"=".repeat((4 - value.length % 4) % 4)}`;
   return Uint8Array.from(atob(padded), (character) => character.charCodeAt(0));
@@ -1176,8 +1190,7 @@ function ChatView({
       const reminders = JSON.parse(localStorage.getItem("rune-reminders") || "[]") as Array<Record<string, string>>;
       reminders.push({ id: String(Date.now()), title: action.input.title || "Rune 提醒", datetime: action.input.datetime || "" });
       localStorage.setItem("rune-reminders", JSON.stringify(reminders));
-      const deviceId = localStorage.getItem("rune-device-id");
-      const deviceToken = localStorage.getItem("rune-device-token");
+      const { deviceId, deviceToken } = await ensureRuneDevice();
       if (deviceId && deviceToken) {
         const response = await fetch(`${runeApiBase()}/api/reminders`, {
           method: "POST",
@@ -1873,6 +1886,20 @@ function SettingsView({
     }
   };
 
+  const testBark = async () => {
+    if (!barkKey.trim()) { setNotificationStatus("请先填写 Bark Device Key。"); return; }
+    setEnablingNotifications(true);
+    setNotificationStatus("");
+    try {
+      const { deviceId, deviceToken } = await ensureRuneDevice();
+      const response = await fetch(`${runeApiBase()}/api/bark/test`, { method: "POST", headers: { "content-type": "application/json", "x-rune-device": deviceId, "x-rune-token": deviceToken }, body: JSON.stringify({ barkServer: barkServer.trim() || "https://api.day.app", barkKey: barkKey.trim(), runeName: profile.name || "Rune", runeAvatar: profile.avatar || "", title: "Bark 测试", content: "Bark 已经连接成功。" }) });
+      await readJson(response, "Bark 测试");
+      setNotificationStatus("Bark 测试通知已经发送。");
+    } catch (error) {
+      setNotificationStatus(error instanceof Error ? error.message : "Bark 测试失败。");
+    } finally { setEnablingNotifications(false); }
+  };
+
   return (
     <main className="page settings-page">
       <header className="section-title"><h1>Settings</h1><span className="settings-mark">⌘</span></header>
@@ -2065,10 +2092,10 @@ function SettingsView({
         <label className="field-label">Bark Device Key
           <input type="password" value={barkKey} onChange={(event) => { setBarkKey(event.target.value); localStorage.setItem("rune-bark-key", event.target.value.trim()); }} placeholder="Bark App 中显示的设备 Key" autoComplete="off" />
         </label>
-        <button className="solid-action" onClick={enableNotifications} disabled={enablingNotifications}>
-          {enablingNotifications ? "正在连接…" : "开启通知"}
+        <button className="solid-action" onClick={testBark} disabled={enablingNotifications || !barkKey.trim()}>
+          {enablingNotifications ? "正在发送…" : "测试 Bark 通知"}
         </button>
-        {notificationStatus && <p className={notificationStatus.startsWith("通知已经") ? "success-note" : "error-note"}>{notificationStatus}</p>}
+        {notificationStatus && <p className={notificationStatus.startsWith("Bark 测试通知") ? "success-note" : "error-note"}>{notificationStatus}</p>}
         <p className="setting-note">填写 Bark 后，Rune 创建提醒时会把 LLM 编辑的标题和正文交给后端，到点后通过 Bark 发送；未填写时使用系统 Web Push。通知发送者名称与头像跟随 Rune 设置。Bark Key 只保存在本机，并在创建提醒时发给你配置的提醒后端。</p>
       </section>
         </div>

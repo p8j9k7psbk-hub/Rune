@@ -1,6 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 
-type ReminderInput = { title?: string; content?: string; scheduledAt?: string; runeName?: string; runeAvatar?: string; barkServer?: string; barkKey?: string; publicBase?: string; deviceId?: string };
+type ReminderInput = { title?: string; content?: string; scheduledAt?: string; mode?: "reminder" | "alarm" | "call"; appUrl?: string; runeName?: string; runeAvatar?: string; barkServer?: string; barkKey?: string; publicBase?: string; deviceId?: string };
 type OAuthProxyInput = { url?: string; method?: string; body?: string; contentType?: string };
 
 const json = (data: unknown, status = 200, headers?: HeadersInit) => new Response(JSON.stringify(data), { status, headers: { "content-type": "application/json; charset=utf-8", ...headers } });
@@ -16,7 +16,10 @@ async function sendBark(input: ReminderInput, icon?: string) {
   const server = (input.barkServer || "https://api.day.app").replace(/\/+$/, "");
   const key = input.barkKey?.trim();
   if (!key) throw new Error("没有配置 Bark Device Key");
-  const response = await fetch(`${server}/${encodeURIComponent(key)}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ title: input.runeName || "Rune", body: input.content || input.title || "Bark 连接测试", group: "Rune", ...(icon ? { icon } : {}) }) });
+  const mode = input.mode || "reminder";
+  const appUrl = input.appUrl?.startsWith("https://") ? input.appUrl.replace(/\/+$/, "") : "";
+  const openUrl = appUrl ? `${appUrl}/?${new URLSearchParams({ rune_surface: mode, title: input.title || "Rune", content: input.content || "" })}` : "";
+  const response = await fetch(`${server}/${encodeURIComponent(key)}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ title: input.runeName || "Rune", body: input.content || input.title || "Bark 连接测试", group: "Rune", ...(mode !== "reminder" ? { level: "timeSensitive", call: "1", sound: mode === "alarm" ? "alarm" : "ringtone" } : {}), ...(openUrl ? { url: openUrl } : {}), ...(icon ? { icon } : {}) }) });
   const result = await response.json().catch(() => null) as { code?: number; message?: string } | null;
   if (!response.ok || (result?.code !== undefined && result.code !== 200)) throw new Error(result?.message || `Bark HTTP ${response.status}`);
   return result;

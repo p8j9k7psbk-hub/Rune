@@ -1,0 +1,22 @@
+{
+  "name": "Rune",
+  "short_name": "Rune",
+  "description": "日记、对话、纪念日与个人生活记录。",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#efeee8",
+  "theme_color": "#efeee8",
+  "icons": [
+    {
+      "src": "/apple-touch-icon.png",
+      "sizes": "180x180",
+      "type": "image/png"
+    },
+    {
+      "src": "/pulse-icon-claude.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}

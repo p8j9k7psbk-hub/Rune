@@ -60,8 +60,8 @@ test("keeps required AI, voice, and mobile behavior", async () => {
   assert.match(page, /当前打开界面/);
   assert.match(page, /profile\.userName \|\| "user"/);
   assert.match(page, /<p className="eyebrow">user<\/p>/);
-  assert.match(page, /<input value="user" readOnly/);
-  assert.match(page, /data\.profile, userName: "user"/);
+  assert.match(page, /value=\{profile\.userName\} onChange=/);
+  assert.match(page, /storedProfile\.userName = "user"/);
   assert.match(page, /<details className="settings-group">\s*<summary><span><b>Rune<\/b>/);
   assert.match(page, /语音（MiniMax）/);
   assert.match(mobileCss, /font-size:\s*16px !important/);

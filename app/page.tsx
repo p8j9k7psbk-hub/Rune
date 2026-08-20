@@ -407,7 +407,7 @@ function HomeView({
       <header className="home-header">
         <div>
           <p className="eyebrow">{todayLabel}</p>
-          <h1>{greetingFor(now)}, {profile.userName || "你"}</h1>
+          <h1>{greetingFor(now)}, {profile.userName || "user"}</h1>
         </div>
         <HeaderButton label="打开设置" onClick={goSettings}>
           <span className="sun-icon">☼</span>
@@ -1680,7 +1680,7 @@ function SettingsView({
           </button>
           <div className="identity-fields">
             <p className="eyebrow">user</p>
-            <input value={profile.userName} onChange={(event) => updateProfile({ userName: event.target.value })} placeholder="user" autoComplete="off" aria-label="user 昵称" />
+            <input value="user" readOnly placeholder="user" autoComplete="off" aria-label="user 昵称" />
           </div>
           {profile.userAvatar && <button className="remove-row" onClick={() => updateProfile({ userAvatar: "" })} aria-label="移除我的头像">×</button>}
         </div>
@@ -1950,8 +1950,7 @@ export default function Pulse() {
         if (data.homeMessage) setHomeMessage(data.homeMessage);
         if (data.homeMessageAt) setHomeMessageAt(data.homeMessageAt);
         if (data.profile) {
-          const storedProfile = { ...defaultProfile, ...data.profile } as Profile;
-          if (!storedProfile.userName || ["沈澈", "kiki"].includes(storedProfile.userName)) storedProfile.userName = "user";
+          const storedProfile = { ...defaultProfile, ...data.profile, userName: "user" } as Profile;
           setProfile(storedProfile);
         }
         if (data.voiceConfig) setVoiceConfig({ ...defaultVoiceConfig, ...data.voiceConfig });

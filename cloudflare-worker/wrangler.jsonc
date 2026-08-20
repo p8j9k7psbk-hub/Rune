@@ -7,6 +7,7 @@
   "vars": {
     "ALLOWED_ORIGINS": "https://rune.r-vera.com,https://p8j9k7psbk-hub.github.io"
   },
+  "routes": [{ "pattern": "rune-push.r-vera.com", "custom_domain": true }],
   "durable_objects": { "bindings": [{ "name": "DEVICES", "class_name": "Device" }] },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Device"] }],
   "observability": { "enabled": true, "head_sampling_rate": 1 }

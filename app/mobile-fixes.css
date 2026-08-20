@@ -49,6 +49,10 @@
     font-size: 16px !important;
   }
 
+  .claude-composer .chat-model-select {
+    font-size: 11px !important;
+  }
+
   .settings-page input:not([type="range"]),
   .settings-page textarea,
   .settings-page select {

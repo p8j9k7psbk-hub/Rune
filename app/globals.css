@@ -491,3 +491,10 @@ h1 { font-family:var(--serif); font-weight:500; letter-spacing:-.035em; }
   .metrics-grid { grid-template-columns:repeat(2,1fr); }
   .metric-card { min-height:112px; }
 }
+
+/* 运行环境自检 */
+.capability-check { margin-top:14px; padding:12px 14px; border:1px solid var(--border); border-radius:14px; background:var(--surface); }
+.capability-check .eyebrow { margin:0 0 7px; font-size:10px; }
+.capability-check ul { margin:0; padding:0; list-style:none; display:flex; flex-direction:column; gap:5px; }
+.capability-check li { font-size:11px; line-height:1.5; color:var(--muted); }
+.capability-check b { display:inline-block; min-width:16px; margin-right:5px; color:var(--ink); font-weight:600; }

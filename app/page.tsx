@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import "./mobile-fixes.css";
 
 type Tab = "home" | "chat" | "diary" | "settings";
 type ThemeName = "paper" | "sage" | "ink" | "claude";
@@ -9,28 +10,23 @@ type HealthSummary = { steps?: number; heartRate?: number; importedAt?: string; 
 type McpServer = { id: number; name: string; url: string; enabled: boolean; requiresAuth?: boolean };
 type Todo = { id: number; text: string; meta: string; done: boolean };
 type ClaudeModel = { id: string; display_name: string; created_at?: string };
-type ApiProtocol = "anthropic" | "openai";
 type ChatAttachment = { id: number; name: string; kind: "image" | "text"; mediaType: string; data: string };
-type ChatMessage = { role: "user" | "assistant"; text: string; attachments?: ChatAttachment[] };
+type ChatMessage = { role: "user" | "assistant"; text: string; attachments?: ChatAttachment[]; voice?: boolean };
 type RuneAction = { id: string; name: "add_todo" | "write_diary" | "set_home_message" | "create_reminder"; input: Record<string, string>; status: "pending" | "done" | "cancelled" };
-type RegexScope = "reply" | "input" | "both";
-type RegexRule = { id: number; name: string; pattern: string; flags: string; replace: string; scope: RegexScope; enabled: boolean };
 type Profile = {
   name: string;         // Rune 的昵称
   avatar: string;       // Rune 的头像，dataURL；留空则显示昵称首字
   userName: string;     // 你的昵称
   userAvatar: string;   // 你的头像
   instructions: string;
-  regexRules: RegexRule[];
 };
 
 const defaultProfile: Profile = {
   name: "Rune",
   avatar: "",
-  userName: "用户",
+  userName: "user",
   userAvatar: "",
   instructions: "你是 Rune，一个安静、真诚、有温度的私人陪伴助手。使用简洁自然的中文回答。",
-  regexRules: [],
 };
 
 // 手机照片直接转 base64 有好几 MB，存两张就吃掉大半配额。
@@ -67,27 +63,14 @@ function initialOf(name: string, fallback: string) {
   return (name.trim() || fallback).slice(0, 1);
 }
 
+type ApiProtocol = "anthropic" | "openai";
+
 function normalizeAiApiBase(value: string) {
   return value.trim().replace(/\/+$/, "").replace(/\/models$/, "").replace(/\/chat\/completions$/, "").replace(/\/messages$/, "");
 }
 
 function apiProtocolFor(base: string): ApiProtocol {
   return /(^|\.)anthropic\.com\b|\/anthropic\b/i.test(base) ? "anthropic" : "openai";
-}
-
-// 正则规则：对发出去的内容或收到的回复做替换。写错的规则直接跳过，不能让聊天崩掉。
-function applyRegexRules(text: string, rules: RegexRule[], scope: "reply" | "input") {
-  let result = text;
-  for (const rule of rules) {
-    if (!rule.enabled || !rule.pattern) continue;
-    if (rule.scope !== "both" && rule.scope !== scope) continue;
-    try {
-      result = result.replace(new RegExp(rule.pattern, rule.flags || "g"), rule.replace);
-    } catch {
-      // 无效的正则或标志，忽略这一条
-    }
-  }
-  return result;
 }
 
 type StoredConversation = { id: number; title: string; updatedAt: number; messages: ChatMessage[] };
@@ -198,6 +181,107 @@ function daysTogether(date: string) {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
   return Math.max(1, Math.floor((today.getTime() - start.getTime()) / 86400000) + 1);
+}
+
+type VoiceClip = { url: string; duration: number };
+const VOICE_MARK = /^\s*\[\[voice\]\]\s*/i;
+
+type VoiceConfig = {
+  endpoint: string;
+  groupId: string;
+  voiceId: string;
+  model: string;
+  speed: number;
+  autoPlay: boolean;   // Rune 回复后自动朗读
+};
+
+const defaultVoiceConfig: VoiceConfig = {
+  endpoint: "https://api.minimax.chat/v1/t2a_v2",
+  groupId: "",
+  voiceId: "",
+  model: "speech-02-hd",
+  speed: 1,
+  autoPlay: false,
+};
+
+// API Key 跟 Claude Key 一样只放 sessionStorage，关掉浏览器就没了。
+// 其余几项不是密钥，随偏好一起持久化。
+const MINIMAX_KEY_STORAGE = "rune-minimax-key";
+
+function hexToBytes(hex: string) {
+  const clean = hex.trim();
+  const out = new Uint8Array(Math.floor(clean.length / 2));
+  for (let i = 0; i < out.length; i += 1) out[i] = parseInt(clean.slice(i * 2, i * 2 + 2), 16);
+  return out;
+}
+
+// MiniMax T2A：音频以十六进制字符串放在 data.audio 里，转成 Blob URL 交给 <audio> 播。
+async function synthesizeSpeech(text: string, config: VoiceConfig, apiKey: string): Promise<string> {
+  const clean = text.replace(/\s+/g, " ").trim();
+  if (!clean) throw new Error("没有可朗读的内容。");
+  if (!apiKey) throw new Error("还没填 MiniMax API Key，去 Settings → 语音 里填。");
+  if (!config.voiceId) throw new Error("还没填 Voice ID。");
+  const base = (config.endpoint || defaultVoiceConfig.endpoint).replace(/\/+$/, "");
+  const url = config.groupId ? `${base}?GroupId=${encodeURIComponent(config.groupId)}` : base;
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
+    body: JSON.stringify({
+      model: config.model || defaultVoiceConfig.model,
+      text: clean.slice(0, 4000),
+      stream: false,
+      output_format: "hex",
+      voice_setting: { voice_id: config.voiceId, speed: config.speed || 1, vol: 1, pitch: 0 },
+      audio_setting: { sample_rate: 32000, bitrate: 128000, format: "mp3", channel: 1 },
+    }),
+  });
+  const body = await response.text();
+  let data: Record<string, never> | null = null;
+  try {
+    data = JSON.parse(body);
+  } catch {
+    throw new Error(`合成失败：后端没有返回 JSON（HTTP ${response.status}）。`);
+  }
+  const resp = (data as Record<string, { status_code?: number; status_msg?: string }> | null)?.base_resp;
+  if (!response.ok || (resp?.status_code !== undefined && resp.status_code !== 0)) {
+    throw new Error(`合成失败：${resp?.status_msg || `HTTP ${response.status}`}`);
+  }
+  const audio = (data as Record<string, { audio?: string }> | null)?.data?.audio;
+  if (!audio) throw new Error("合成失败：返回里没有音频数据。");
+  return URL.createObjectURL(new Blob([hexToBytes(audio)], { type: "audio/mpeg" }));
+}
+
+// 浏览器自带的语音识别。Safari 走 webkit 前缀；不支持时返回 null，界面据此降级。
+function speechRecognitionClass(): (new () => SpeechRecognitionLike) | null {
+  const scope = globalThis as unknown as {
+    SpeechRecognition?: new () => SpeechRecognitionLike;
+    webkitSpeechRecognition?: new () => SpeechRecognitionLike;
+  };
+  return scope.SpeechRecognition || scope.webkitSpeechRecognition || null;
+}
+
+type SpeechRecognitionLike = {
+  lang: string;
+  continuous: boolean;
+  interimResults: boolean;
+  start: () => void;
+  stop: () => void;
+  abort: () => void;
+  onresult: ((event: { resultIndex: number; results: ArrayLike<ArrayLike<{ transcript: string }> & { isFinal: boolean }> }) => void) | null;
+  onerror: ((event: { error: string }) => void) | null;
+  onend: (() => void) | null;
+};
+
+// 每次请求都把"此刻"算一遍塞进 system prompt。
+// 不做成工具是因为工具结果要靠 tool_result 回传，而那条链路目前还没闭环。
+function nowContext() {
+  const now = new Date();
+  const zone = Intl.DateTimeFormat().resolvedOptions().timeZone || "Asia/Singapore";
+  const full = now.toLocaleString("zh-CN", {
+    year: "numeric", month: "long", day: "numeric",
+    weekday: "long", hour: "2-digit", minute: "2-digit", hour12: false,
+  });
+  return `现在是 ${full}（${zone}，ISO：${now.toISOString()}）。涉及"今天/明天/几点"一律以此为准，不要自己猜。`;
 }
 
 function greetingFor(date: Date) {
@@ -395,7 +479,7 @@ function HomeView({
   );
 }
 
-function DiaryView({ userName }: { userName: string }) {
+function DiaryView({ profile }: { profile: Profile }) {
   const [mode, setMode] = useState<"mine" | "rune">("mine");
   const today = useMemo(() => new Date(), []);
   const todayKey = localDateKey(today);
@@ -481,8 +565,8 @@ function DiaryView({ userName }: { userName: string }) {
       </header>
 
       <div className="segmented-control">
-        <button className={mode === "mine" ? "active" : ""} onClick={() => setMode("mine")}>{userName.trim() || "用户"}</button>
-        <button className={mode === "rune" ? "active" : ""} onClick={() => setMode("rune")}>Rune</button>
+        <button className={mode === "mine" ? "active" : ""} onClick={() => setMode("mine")}>{profile.userName || "user"}</button>
+        <button className={mode === "rune" ? "active" : ""} onClick={() => setMode("rune")}>{profile.name || "Rune"}</button>
       </div>
 
       <p className="date-label">{formattedDate}</p>
@@ -570,8 +654,12 @@ function ChatView({
   mcpServers,
   setHomeMessage,
   profile,
+  voiceConfig,
+  minimaxKey,
 }: {
   aiApiBase: string;
+  voiceConfig: VoiceConfig;
+  minimaxKey: string;
   claudeKey: string;
   claudeModel: string;
   claudeModels: ClaudeModel[];
@@ -592,6 +680,252 @@ function ChatView({
   const [showHistory, setShowHistory] = useState(false);
   const hydrated = useRef(false);
   const attachmentRef = useRef<HTMLInputElement>(null);
+
+  // ── 语音 ───────────────────────────────────────────────
+  const [listening, setListening] = useState(false);
+  const [liveTranscript, setLiveTranscript] = useState("");
+  const [speakingIndex, setSpeakingIndex] = useState<number | null>(null);
+  const [preparingIndex, setPreparingIndex] = useState<number | null>(null);
+  const [clips, setClips] = useState<Record<number, VoiceClip>>({});
+  const [shownText, setShownText] = useState<Record<number, boolean>>({});
+  const clipsRef = useRef<Record<number, VoiceClip>>({});
+  const [callActive, setCallActive] = useState(false);
+  const [callStage, setCallStage] = useState<"idle" | "listening" | "thinking" | "speaking">("idle");
+  const [callReply, setCallReply] = useState("");
+  const orbRef = useRef<HTMLDivElement>(null);
+  const waveRef = useRef<HTMLDivElement>(null);
+  const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const callActiveRef = useRef(false);
+  const sttSupported = typeof globalThis.window !== "undefined" && Boolean(speechRecognitionClass());
+  const voiceReady = Boolean(minimaxKey && voiceConfig.voiceId);
+
+  useEffect(() => {
+    if (typeof globalThis.location === "undefined") return;
+    if (new URLSearchParams(globalThis.location.search).get("preview") !== "voice-call") return;
+    setCallActive(true);
+    callActiveRef.current = true;
+    setCallStage("speaking");
+    setCallReply("我在。慢慢说，我会听着。 ");
+  }, []);
+
+  const stopAudio = () => {
+    if (audioRef.current) {
+      audioRef.current.pause();
+      if (audioRef.current.src.startsWith("blob:")) URL.revokeObjectURL(audioRef.current.src);
+      audioRef.current = null;
+    }
+    setSpeakingIndex(null);
+  };
+
+  // 朗读一段文字，返回一个在播放结束时 resolve 的 Promise（通话模式要靠它串起来）
+  const speak = async (text: string, index: number | null) => {
+    stopAudio();
+    const url = await synthesizeSpeech(text, voiceConfig, minimaxKey);
+    const audio = new Audio(url);
+    audioRef.current = audio;
+    setSpeakingIndex(index);
+    await new Promise<void>((resolve) => {
+      audio.onended = () => { URL.revokeObjectURL(url); resolve(); };
+      audio.onerror = () => { URL.revokeObjectURL(url); resolve(); };
+      audio.play().catch(() => resolve());
+    });
+    if (audioRef.current === audio) audioRef.current = null;
+    setSpeakingIndex(null);
+  };
+
+  // 语音消息：合成一次后缓存，之后点开即播；顺便拿到真实时长用来显示
+  const prepareClip = async (index: number, text: string): Promise<VoiceClip | null> => {
+    const existing = clipsRef.current[index];
+    if (existing) return existing;
+    setPreparingIndex(index);
+    try {
+      const url = await synthesizeSpeech(text, voiceConfig, minimaxKey);
+      const duration = await new Promise<number>((resolve) => {
+        const probe = new Audio(url);
+        probe.onloadedmetadata = () => resolve(Number.isFinite(probe.duration) ? probe.duration : 0);
+        probe.onerror = () => resolve(0);
+      });
+      const clip: VoiceClip = { url, duration };
+      clipsRef.current[index] = clip;
+      setClips({ ...clipsRef.current });
+      return clip;
+    } catch (error) {
+      setChatNotice(error instanceof Error ? error.message : "语音合成失败。");
+      globalThis.setTimeout(() => setChatNotice(""), 3500);
+      return null;
+    } finally {
+      setPreparingIndex(null);
+    }
+  };
+
+  const playClip = (index: number, url: string) => {
+    stopAudio();
+    const audio = new Audio(url);
+    audioRef.current = audio;
+    setSpeakingIndex(index);
+    audio.onended = () => { if (audioRef.current === audio) audioRef.current = null; setSpeakingIndex(null); };
+    audio.onerror = () => { setSpeakingIndex(null); };
+    audio.play().catch(() => setSpeakingIndex(null));
+  };
+
+  const toggleVoiceMessage = async (index: number, text: string) => {
+    if (speakingIndex === index) { stopAudio(); return; }
+    const clip = clipsRef.current[index] || await prepareClip(index, text);
+    if (clip) playClip(index, clip.url);
+  };
+
+  // 听一句话：静音或用户手动停止后 resolve 出最终文本
+  const listenOnce = () => new Promise<string>((resolve, reject) => {
+    const Recognition = speechRecognitionClass();
+    if (!Recognition) { reject(new Error("这个浏览器没有语音识别。iOS 上主屏 PWA 常常拿不到，用 Safari 直接打开试试。")); return; }
+    const recognition = new Recognition();
+    recognition.lang = "zh-CN";
+    recognition.continuous = false;
+    recognition.interimResults = true;
+    recognitionRef.current = recognition;
+    let finalText = "";
+    recognition.onresult = (event) => {
+      let interim = "";
+      for (let i = event.resultIndex; i < event.results.length; i += 1) {
+        const result = event.results[i];
+        const text = result[0]?.transcript || "";
+        if (result.isFinal) finalText += text; else interim += text;
+      }
+      setLiveTranscript(finalText + interim);
+    };
+    recognition.onerror = (event) => {
+      recognitionRef.current = null;
+      setListening(false);
+      if (event.error === "no-speech" || event.error === "aborted") { resolve(finalText.trim()); return; }
+      reject(new Error(event.error === "not-allowed" ? "麦克风权限被拒绝了。" : `语音识别出错：${event.error}`));
+    };
+    recognition.onend = () => {
+      recognitionRef.current = null;
+      setListening(false);
+      resolve(finalText.trim());
+    };
+    setListening(true);
+    setLiveTranscript("");
+    recognition.start();
+  });
+
+  const stopListening = () => {
+    recognitionRef.current?.stop();
+    setListening(false);
+  };
+
+  // 发一条语音消息：录 → 转文字 → 当普通消息发出去
+  const sendVoiceMessage = async () => {
+    if (listening) { stopListening(); return; }
+    try {
+      const text = await listenOnce();
+      setLiveTranscript("");
+      if (!text) { setChatNotice("没听清，再说一次？"); globalThis.setTimeout(() => setChatNotice(""), 2500); return; }
+      await sendMessage(text);
+    } catch (error) {
+      setChatNotice(error instanceof Error ? error.message : "录音失败。");
+      globalThis.setTimeout(() => setChatNotice(""), 3500);
+    }
+  };
+
+  // 通话模式：听 → 发 → 朗读 → 再听，循环到挂断
+  const runCall = async () => {
+    while (callActiveRef.current) {
+      try {
+        setCallStage("listening");
+        setCallReply("");
+        const said = await listenOnce();
+        if (!callActiveRef.current) break;
+        setLiveTranscript("");
+        if (!said) continue;   // 没听到就接着听
+
+        setCallStage("thinking");
+        const reply = await sendMessage(said);
+        if (!callActiveRef.current) break;
+
+        if (reply) {
+          setCallReply(reply);      // 文字和语音同时出来
+          setCallStage("speaking");
+          await speak(reply, null);
+        }
+      } catch (error) {
+        setChatNotice(error instanceof Error ? error.message : "通话中断。");
+        break;
+      }
+    }
+    setCallStage("idle");
+    setCallActive(false);
+    callActiveRef.current = false;
+  };
+
+  const startCall = () => {
+    if (!sttSupported) { setChatNotice("这个浏览器没有语音识别，打不了电话。iOS 上主屏 PWA 常常拿不到，用 Safari 直接打开试试。"); return; }
+    if (!voiceReady) { setChatNotice("先去 Settings → 语音 填好 MiniMax 的 Key 和 Voice ID。"); return; }
+    setCallActive(true);
+    callActiveRef.current = true;
+    setShowHistory(false);
+    runCall();
+  };
+
+  const endCall = () => {
+    callActiveRef.current = false;
+    setCallActive(false);
+    setCallStage("idle");
+    setCallReply("");
+    recognitionRef.current?.abort();
+    recognitionRef.current = null;
+    stopAudio();
+    setLiveTranscript("");
+  };
+
+  // 每帧逐根算高度。CSS 动画做不到这个效果：给每根线加固定相位差，
+  // 得到的永远是"形状固定的波在绕圈跑"，看起来就是个不规则轮廓在原地转。
+  // 这里用四个正弦叠加，角度频率(3/7/11/5)和时间频率(1.7/-2.3/3.1/-1.1)
+  // 都互不成比例，所以波形本身在不断改变，而不只是旋转。
+  useEffect(() => {
+    const wave = waveRef.current;
+    if (!wave) return;
+    const bars = Array.from(wave.querySelectorAll<HTMLElement>("b"));
+    if (!bars.length) return;
+
+    if (callStage !== "speaking") {
+      for (const bar of bars) bar.style.transform = "scaleY(1)";
+      orbRef.current?.style.setProperty("--level", "0");
+      return;
+    }
+
+    const count = bars.length;
+    const start = performance.now();
+    let frame = 0;
+    const tick = (now: number) => {
+      const t = (now - start) / 1000;
+      let peak = 0;
+      for (let i = 0; i < count; i += 1) {
+        const angle = (i / count) * Math.PI * 2;
+        const value =
+          0.50 * Math.sin(angle * 3 + t * 1.7) +
+          0.30 * Math.sin(angle * 7 - t * 2.3) +
+          0.20 * Math.sin(angle * 11 + t * 3.1) +
+          0.15 * Math.sin(angle * 5 - t * 1.1);
+        const scale = 0.5 + (value + 1.15) / 2.3 * 1.4;   // 归一化到约 0.5–1.9
+        bars[i].style.transform = `scaleY(${scale.toFixed(3)})`;
+        if (scale > peak) peak = scale;
+      }
+      orbRef.current?.style.setProperty("--level", Math.min(1, (peak - 0.5) / 1.4).toFixed(3));
+      frame = requestAnimationFrame(tick);
+    };
+    frame = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frame);
+  }, [callStage]);
+
+  // 离开页面时把麦克风和音频都收干净
+  useEffect(() => () => {
+    callActiveRef.current = false;
+    recognitionRef.current?.abort();
+    if (audioRef.current) audioRef.current.pause();
+  }, []);
+
   const selectedModel = claudeModels.find((model) => model.id === claudeModel);
 
   useEffect(() => {
@@ -726,18 +1060,19 @@ function ChatView({
     setMessages((items) => [...items, { role: "assistant", text: `${action.name === "add_todo" ? "待办" : action.name === "write_diary" ? "日记" : action.name === "set_home_message" ? "首页文字" : "提醒"}已经更新。` }]);
   };
 
-  const sendMessage = async () => {
-    const raw = input.trim();
-    const text = applyRegexRules(raw, profile.regexRules, "input");
-    if ((!text && !attachments.length) || sending) return;
+  const sendMessage = async (spokenText?: string): Promise<string> => {
+    const raw = (spokenText ?? input).trim();
+    const text = raw;
+    if ((!text && !attachments.length) || sending) return "";
     const outgoingAttachments = attachments;
     const nextMessages: ChatMessage[] = [...messages, { role: "user", text, attachments: outgoingAttachments }];
     setMessages(nextMessages);
     setInput("");
     setAttachments([]);
-    if (!aiApiBase || !claudeKey || !claudeModel) {
-      setMessages([...nextMessages, { role: "assistant", text: "先去 Settings 填写 AI API 地址和 Key，并选择模型，我就可以真正回复你了。" }]);
-      return;
+    if (!claudeKey || !claudeModel) {
+      const hint = "先去 Settings 连接 AI API 并选择模型，我就可以真正回复你了。";
+      setMessages([...nextMessages, { role: "assistant", text: hint }]);
+      return hint;
     }
 
     setSending(true);
@@ -751,19 +1086,16 @@ function ChatView({
       ];
       const apiBase = normalizeAiApiBase(aiApiBase);
       const protocol = apiProtocolFor(apiBase);
-      const systemPrompt = `${profile.instructions || defaultProfile.instructions}\n\n当前日期是 ${localDateKey(new Date())}，用户时区为 Asia/Singapore。需要修改 ${profile.name || "Rune"} 数据或创建提醒时必须调用对应工具，不要假装已经完成。`;
-      const response = await fetch(protocol === "anthropic" ? `${apiBase}/messages` : `${apiBase}/chat/completions`, {
+      const systemPrompt = `${profile.instructions || defaultProfile.instructions}\n\n${nowContext()}\n需要修改 ${profile.name || "Rune"} 数据或创建提醒时必须调用对应工具，不要假装已经完成。
+${voiceReady ? "当这句话情绪比较浓、更适合说出来而不是打字时（安慰、想念、认真的鼓励、道歉之类），在回复最前面加上 [[voice]] 标记，它会以语音消息的形式发过去。日常闲聊、查信息、确认事项不要加。一次对话里别频繁使用。" : ""}`;
+      const endpoint = protocol === "anthropic" ? `${apiBase}/messages` : `${apiBase}/chat/completions`;
+      const response = await fetch(endpoint, {
         method: "POST",
         headers: protocol === "anthropic" ? {
-          "content-type": "application/json",
-          "x-api-key": claudeKey,
-          "anthropic-version": "2023-06-01",
-          "anthropic-dangerous-direct-browser-access": "true",
+          "content-type": "application/json", "x-api-key": claudeKey,
+          "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true",
           ...(enabledMcp.length ? { "anthropic-beta": "mcp-client-2025-11-20" } : {}),
-        } : {
-          "content-type": "application/json",
-          "authorization": `Bearer ${claudeKey}`,
-        },
+        } : { "content-type": "application/json", authorization: `Bearer ${claudeKey}` },
         body: JSON.stringify(protocol === "anthropic" ? {
           model: claudeModel,
           max_tokens: 2048,
@@ -791,52 +1123,83 @@ function ChatView({
           max_tokens: 2048,
           messages: [
             { role: "system", content: systemPrompt },
-            ...nextMessages.map((message) => ({
-              role: message.role,
-              content: message.attachments?.length ? [
-                ...message.attachments.map((attachment) => attachment.kind === "image" && attachment.data
-                  ? { type: "image_url", image_url: { url: `data:${attachment.mediaType};base64,${attachment.data}` } }
-                  : { type: "text", text: attachment.data ? `附件「${attachment.name}」内容：\n${attachment.data}` : `（附件「${attachment.name}」的内容未保留）` }),
-                { type: "text", text: message.text || "" },
-              ] : message.text,
-            })),
+            ...nextMessages.map((message) => ({ role: message.role, content: message.text || "（含附件的消息）" })),
           ],
           tools: runeTools.map((tool) => ({ type: "function", function: { name: tool.name, description: tool.description, parameters: tool.input_schema } })),
         }),
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data?.error?.message || "AI API 请求失败");
-      const rawReply = protocol === "anthropic"
+      const reply = protocol === "anthropic"
         ? (data.content || []).filter((block: { type: string }) => block.type === "text").map((block: { text: string }) => block.text).join("\n")
         : String(data.choices?.[0]?.message?.content || "");
-      const reply = applyRegexRules(rawReply, profile.regexRules, "reply");
-      const proposed = protocol === "anthropic" ? (data.content || [])
-          .filter((block: { type: string; name?: string }) => block.type === "tool_use" && ["add_todo", "write_diary", "set_home_message", "create_reminder"].includes(block.name || ""))
-          .map((block: { id: string; name: RuneAction["name"]; input: Record<string, string> }) => ({ id: block.id, name: block.name, input: block.input, status: "pending" as const }))
-        : (data.choices?.[0]?.message?.tool_calls || [])
-          .filter((call: { function?: { name?: string } }) => ["add_todo", "write_diary", "set_home_message", "create_reminder"].includes(call.function?.name || ""))
-          .map((call: { id: string; function: { name: RuneAction["name"]; arguments?: string } }) => {
+      const proposed = protocol === "anthropic"
+        ? (data.content || []).filter((block: { type: string; name?: string }) => block.type === "tool_use" && ["add_todo", "write_diary", "set_home_message", "create_reminder"].includes(block.name || "")).map((block: { id: string; name: RuneAction["name"]; input: Record<string, string> }) => ({ id: block.id, name: block.name, input: block.input, status: "pending" as const }))
+        : (data.choices?.[0]?.message?.tool_calls || []).filter((call: { function?: { name?: string } }) => ["add_todo", "write_diary", "set_home_message", "create_reminder"].includes(call.function?.name || "")).map((call: { id: string; function: { name: RuneAction["name"]; arguments?: string } }) => {
             let input: Record<string, string> = {};
             try { input = JSON.parse(call.function.arguments || "{}"); } catch { input = {}; }
             return { id: call.id, name: call.function.name, input, status: "pending" as const };
           });
-      const finalReply = reply || (proposed.length ? "我准备执行下面的操作，请你确认。" : "我在。");
-      setMessages([...nextMessages, { role: "assistant", text: finalReply }]);
+      // Rune 用 [[voice]] 标记"这句想说出来"，剥掉标记并记成语音消息
+      const wantsVoice = VOICE_MARK.test(reply);
+      const spoken = reply.replace(VOICE_MARK, "").trim();
+      const finalReply = spoken || reply || (proposed.length ? "我准备执行下面的操作，请你确认。" : "我在。");
+      const replyIndex = nextMessages.length;
+      setMessages([...nextMessages, { role: "assistant", text: finalReply, voice: wantsVoice && voiceReady }]);
       // 首页那张卡片跟着对话走：每次回复都同步过去，附带时间戳。
-      if (reply) setHomeMessage(reply);
+      if (finalReply) setHomeMessage(finalReply);
       if (proposed.length) setActions((items) => [...items, ...proposed]);
+      // 语音消息先合成好，点开就能响；通话模式由 runCall 自己念，这里不重复
+      if (wantsVoice && voiceReady && !callActiveRef.current) {
+        prepareClip(replyIndex, finalReply)
+          .then((clip) => { if (voiceConfig.autoPlay && clip) playClip(replyIndex, clip.url); })
+          .catch(() => undefined);
+      }
+      return finalReply;
     } catch (error) {
-      setMessages([...nextMessages, { role: "assistant", text: `连接失败：${error instanceof Error ? error.message : "请检查 API Key 和网络。"}` }]);
+      const failure = `连接失败：${error instanceof Error ? error.message : "请检查 API Key 和网络。"}`;
+      setMessages([...nextMessages, { role: "assistant", text: failure }]);
+      return failure;
     } finally {
       setSending(false);
     }
   };
 
+  const callLabel = { idle: "接通中…", listening: "在听你说", thinking: "正在想", speaking: `${profile.name || "Rune"} 在说` }[callStage];
+
   return (
     <main className="page claude-chat-page">
+      {callActive && (
+        <div className="call-overlay" role="dialog" aria-label="语音通话">
+          <div className={`call-orb ${callStage}`} ref={orbRef}>
+            <div className="call-halo" aria-hidden="true" />
+            <div className="call-wave" aria-hidden="true" ref={waveRef}>
+              {Array.from({ length: 180 }, (_, i) => (
+                <i key={i} style={{ "--i": i } as React.CSSProperties}><b /></i>
+              ))}
+            </div>
+            <div className="call-avatar">
+              {profile.avatar ? <img src={profile.avatar} alt="" /> : <span>{initialOf(profile.name, "R")}</span>}
+            </div>
+          </div>
+          <strong>{profile.name || "Rune"}</strong>
+          <p className={`call-stage ${callStage}`}>{callLabel}</p>
+          {/* 说话时把回复文字一起显示出来，听的时候显示实时字幕 */}
+          <p className={callStage === "speaking" ? "call-transcript reply" : "call-transcript"}>
+            {callStage === "speaking"
+              ? callReply
+              : liveTranscript || (callStage === "listening" ? "说点什么…" : "")}
+          </p>
+          <button className="call-end" onClick={endCall} aria-label="挂断">挂断</button>
+        </div>
+      )}
+
       <header className="claude-chat-header">
         <span className="claude-mini-mark">{profile.avatar ? <img src={profile.avatar} alt="" /> : <img src="./pulse-icon-claude.png" alt="" />}</span>
         <div><strong>{profile.name || "Rune"}</strong><small>{selectedModel?.display_name || claudeModel || "尚未连接模型"}</small></div>
+        {(
+          <button className="call-button" onClick={startCall} aria-label={`和 ${profile.name || "Rune"} 通话`}>✆</button>
+        )}
         <button
           className={showHistory ? "history-button active" : "history-button"}
           onClick={() => setShowHistory((open) => !open)}
@@ -888,7 +1251,27 @@ function ChatView({
               {/* 自己发的消息不显示昵称，头像已经足够区分 */}
               {message.role === "assistant" && <span className="msg-name">{profile.name || "Rune"}</span>}
               {!!message.attachments?.length && <div className="sent-attachments">{message.attachments.map((attachment) => <span key={attachment.id}>{attachment.kind === "image" ? "▧" : "≡"} {attachment.name}</span>)}</div>}
-              {message.text && <p>{message.text}</p>}
+              {message.voice ? (
+                <div className="voice-message">
+                  <button
+                    className={speakingIndex === index ? "voice-bubble playing" : "voice-bubble"}
+                    onClick={() => toggleVoiceMessage(index, message.text)}
+                    aria-label={speakingIndex === index ? "停止播放" : "播放语音"}
+                  >
+                    <span className="voice-icon">{preparingIndex === index ? "…" : speakingIndex === index ? "◼" : "▶"}</span>
+                    <span className="voice-wave" aria-hidden="true">
+                      {[7, 13, 9, 16, 11, 6, 14, 10].map((h, i) => <i key={i} style={{ height: h }} />)}
+                    </span>
+                    <small>{clips[index]?.duration ? `${Math.max(1, Math.round(clips[index].duration))}"` : "语音"}</small>
+                  </button>
+                  <button className="voice-to-text" onClick={() => setShownText((m) => ({ ...m, [index]: !m[index] }))}>
+                    {shownText[index] ? "收起文字" : "转文字"}
+                  </button>
+                  {shownText[index] && <p className="voice-transcript">{message.text}</p>}
+                </div>
+              ) : (
+                message.text && <p>{message.text}</p>
+              )}
             </div>
           </article>
         ))}
@@ -927,7 +1310,18 @@ function ChatView({
           rows={2}
         />
         <input ref={attachmentRef} className="hidden-file" type="file" multiple accept="image/*,.txt,.md,.json,.csv,text/*" onChange={(event) => addAttachments(event.target.files)} />
-        <div><button className="attach-button" onClick={() => attachmentRef.current?.click()} aria-label="添加附件">＋</button><small>{selectedModel?.display_name || "AI"}</small><button className="send-button" onClick={sendMessage} disabled={(!input.trim() && !attachments.length) || sending} aria-label="发送消息">↑</button></div>
+        <div>
+          <button className="attach-button" onClick={() => attachmentRef.current?.click()} aria-label="添加附件">＋</button>
+          {(
+            <button
+              className={listening ? "mic-button recording" : "mic-button"}
+              onClick={sendVoiceMessage}
+              aria-label={listening ? "停止录音并发送" : "按住说话"}
+            >{listening ? "■" : "🎙"}</button>
+          )}
+          <small>{listening ? (liveTranscript || "在听…") : (selectedModel?.display_name || "AI")}</small>
+          <button className="send-button" onClick={() => sendMessage()} disabled={(!input.trim() && !attachments.length) || sending} aria-label="发送消息">↑</button>
+        </div>
       </div>
     </main>
   );
@@ -954,11 +1348,19 @@ function SettingsView({
   setClaudeModels,
   profile,
   setProfile,
+  voiceConfig,
+  setVoiceConfig,
+  minimaxKey,
+  setMinimaxKey,
 }: {
   aiApiBase: string;
   setAiApiBase: (base: string) => void;
   profile: Profile;
   setProfile: (profile: Profile) => void;
+  voiceConfig: VoiceConfig;
+  setVoiceConfig: (config: VoiceConfig) => void;
+  minimaxKey: string;
+  setMinimaxKey: (key: string) => void;
   theme: ThemeName;
   setTheme: (theme: ThemeName) => void;
   anniversaries: Anniversary[];
@@ -981,6 +1383,32 @@ function SettingsView({
   const [loadingModels, setLoadingModels] = useState(false);
   const [newMcp, setNewMcp] = useState({ name: "", url: "" });
   const [avatarNote, setAvatarNote] = useState("");
+  // 自检用：这三项都在 SettingsView 里就地判断，不依赖 ChatView 的局部状态
+  const sttSupported = typeof globalThis.window !== "undefined" && Boolean(speechRecognitionClass());
+  const voiceReady = Boolean(minimaxKey && voiceConfig.voiceId);
+  // iOS 主屏 App 和普通 Safari 的能力不同，自检里要区分
+  const standaloneMode = typeof globalThis.window !== "undefined" && (
+    globalThis.matchMedia?.("(display-mode: standalone)").matches ||
+    (globalThis.navigator as unknown as { standalone?: boolean }).standalone === true
+  );
+  const [voiceStatus, setVoiceStatus] = useState("");
+  const [testingVoice, setTestingVoice] = useState(false);
+
+  const testVoice = async () => {
+    setTestingVoice(true);
+    setVoiceStatus("");
+    try {
+      const url = await synthesizeSpeech(`你好，我是${profile.name || "Rune"}。这是一段试听。`, voiceConfig, minimaxKey);
+      const audio = new Audio(url);
+      await audio.play();
+      audio.onended = () => URL.revokeObjectURL(url);
+      setVoiceStatus("试听已开始播放。");
+    } catch (error) {
+      setVoiceStatus(error instanceof Error ? error.message : "试听失败。");
+    } finally {
+      setTestingVoice(false);
+    }
+  };
   const runeAvatarRef = useRef<HTMLInputElement>(null);
   const userAvatarRef = useRef<HTMLInputElement>(null);
   const [healthMessage, setHealthMessage] = useState("");
@@ -1018,27 +1446,6 @@ function SettingsView({
       setAvatarNote(`已更新头像（约 ${Math.round(data.length * 2 / 1024)} KB）。`);
     } catch {
       setAvatarNote("这张图片读不出来，换一张试试。");
-    }
-  };
-
-  const updateRule = (id: number, patch: Partial<RegexRule>) => {
-    updateProfile({ regexRules: profile.regexRules.map((rule) => (rule.id === id ? { ...rule, ...patch } : rule)) });
-  };
-
-  const addRule = () => {
-    updateProfile({
-      regexRules: [...profile.regexRules, { id: Date.now(), name: "新规则", pattern: "", flags: "g", replace: "", scope: "reply", enabled: true }],
-    });
-  };
-
-  // 正则写错了要当场看得见，不能等到聊天时才发现没生效。
-  const ruleError = (rule: RegexRule) => {
-    if (!rule.pattern) return "";
-    try {
-      new RegExp(rule.pattern, rule.flags || "g");
-      return "";
-    } catch (error) {
-      return error instanceof Error ? error.message : "无效的正则";
     }
   };
 
@@ -1138,15 +1545,14 @@ function SettingsView({
           "x-api-key": claudeKey.trim(),
           "anthropic-version": "2023-06-01",
           "anthropic-dangerous-direct-browser-access": "true",
-        } : { "authorization": `Bearer ${claudeKey.trim()}` },
+        } : { authorization: `Bearer ${claudeKey.trim()}` },
       });
       const result = await response.json();
       if (!response.ok) throw new Error(result?.error?.message || "读取模型失败");
-      const models = ((result.data || result.models || []) as Array<{ id?: string; name?: string; display_name?: string }>).map((model) => ({
-        id: String(model.id || model.name || ""),
-        display_name: String(model.display_name || model.name || model.id || ""),
-      })).filter((model) => model.id);
-      if (!models.length) throw new Error("这个接口没有返回可用模型。");
+      const models = (result.data || result.models || []).map((model: ClaudeModel | string) => typeof model === "string"
+        ? { id: model, display_name: model }
+        : { ...model, id: String(model.id || ""), display_name: String(model.display_name || model.id || "") })
+        .filter((model: ClaudeModel) => model.id) as ClaudeModel[];
       setClaudeModels(models);
       const preferred = models.find((model) => model.id === claudeModel)
         || models.find((model) => model.id.includes("sonnet-4-6"))
@@ -1254,7 +1660,7 @@ function SettingsView({
             className="instructions-input"
             value={profile.instructions}
             onChange={(event) => updateProfile({ instructions: event.target.value })}
-            placeholder="描述 Rune 是谁、怎么说话、要避免什么……这段会作为 system prompt 发给 Claude。"
+            placeholder="描述 Rune 是谁、怎么说话、要避免什么……这段会作为 system prompt 发给所选模型。"
             rows={7}
           />
         </label>
@@ -1262,39 +1668,13 @@ function SettingsView({
       </section>
 
       <section className="settings-section">
-        <div className="settings-heading"><p className="eyebrow">Regex</p><h2>正则规则</h2></div>
-        <div className="regex-list">
-          {!profile.regexRules.length && <p className="setting-note">还没有规则。规则会在消息发出前、或回复显示前做文本替换。</p>}
-          {profile.regexRules.map((rule) => {
-            const error = ruleError(rule);
-            return (
-              <div className={rule.enabled ? "regex-rule" : "regex-rule off"} key={rule.id}>
-                <div className="regex-rule-head">
-                  <button className={rule.enabled ? "mini-switch on" : "mini-switch"} aria-label={`启用 ${rule.name}`} onClick={() => updateRule(rule.id, { enabled: !rule.enabled })}><i /></button>
-                  <input aria-label="规则名称" value={rule.name} onChange={(event) => updateRule(rule.id, { name: event.target.value })} placeholder="规则名称" />
-                  <button className="remove-row" aria-label={`删除 ${rule.name}`} onClick={() => updateProfile({ regexRules: profile.regexRules.filter((item) => item.id !== rule.id) })}>×</button>
-                </div>
-                <input className="regex-field" aria-label="匹配" value={rule.pattern} onChange={(event) => updateRule(rule.id, { pattern: event.target.value })} placeholder="匹配（正则），如 ^\s+" autoComplete="off" spellCheck={false} />
-                <input className="regex-field" aria-label="替换为" value={rule.replace} onChange={(event) => updateRule(rule.id, { replace: event.target.value })} placeholder="替换为（可留空表示删除）" autoComplete="off" spellCheck={false} />
-                <div className="regex-meta">
-                  <input aria-label="标志" value={rule.flags} onChange={(event) => updateRule(rule.id, { flags: event.target.value })} placeholder="gi" autoComplete="off" spellCheck={false} />
-                  <select aria-label="作用范围" value={rule.scope} onChange={(event) => updateRule(rule.id, { scope: event.target.value as RegexScope })}>
-                    <option value="reply">作用于回复</option>
-                    <option value="input">作用于我的输入</option>
-                    <option value="both">两者都作用</option>
-                  </select>
-                </div>
-                {error && <p className="error-note">正则有误：{error}</p>}
-              </div>
-            );
-          })}
-        </div>
-        <button className="outline-action" onClick={addRule}>＋ 添加规则</button>
-        <p className="setting-note">按列表顺序依次执行。替换里可以用 <code>$1</code> 引用捕获组。写错的规则会标红并自动跳过，不影响聊天。</p>
-      </section>
-      <section className="settings-section">
         <div className="settings-heading"><p className="eyebrow">AI connection</p><h2>通用 AI API</h2></div>
-        <label className="field-label">API 地址<input type="url" value={aiApiBase} onChange={(event) => { setAiApiBase(event.target.value); setClaudeStatus(""); }} placeholder="https://api.openai.com/v1" autoComplete="off" /></label>
+        <div className="api-presets">
+          <button type="button" onClick={() => setAiApiBase("https://api.minimax.io/v1")}>MiniMax 国际</button>
+          <button type="button" onClick={() => setAiApiBase("https://api.minimaxi.com/v1")}>MiniMax 国内</button>
+          <button type="button" onClick={() => setAiApiBase("https://api.anthropic.com/v1")}>Claude</button>
+        </div>
+        <label className="field-label">API 地址<input type="url" value={aiApiBase} onChange={(event) => { setAiApiBase(event.target.value); setClaudeStatus(""); }} placeholder="https://api.example.com/v1" autoComplete="off" /></label>
         <label className="field-label">API Key<input type="password" value={claudeKey} onChange={(event) => { setClaudeKey(event.target.value); setClaudeStatus(""); }} placeholder="sk-••••••••" autoComplete="off" /></label>
         <button className="solid-action" onClick={loadClaudeModels} disabled={loadingModels}>
           {loadingModels ? "正在读取…" : "读取这个 Key 的可用模型"}
@@ -1306,8 +1686,56 @@ function SettingsView({
           </select>
         </label>
         {claudeStatus && <p className={claudeStatus.startsWith("连接成功") ? "success-note" : "error-note"}>{claudeStatus}</p>}
-        <p className="setting-note">支持 Anthropic 原生接口和 OpenAI-compatible 接口。请填写 API 的 v1 根地址，Rune 会自动读取 /models；Key 只保存在当前浏览器会话。部分服务商禁止浏览器跨域直连，这种情况需要服务商开启 CORS 或增加服务器代理。</p>
+        <p className="setting-note">兼容 Anthropic 原生接口，以及提供 <code>/models</code> 与 <code>/chat/completions</code> 的 OpenAI-compatible 接口。部分服务商会阻止浏览器直连，这种情况需要开启 CORS 或使用服务器代理。</p>
       </section>
+      <section className="settings-section">
+        <div className="settings-heading"><p className="eyebrow">Voice</p><h2>语音（MiniMax）</h2></div>
+        <label className="field-label">API Key
+          <input type="password" value={minimaxKey} autoComplete="off" placeholder="控制台 → 接口密钥 里创建"
+            onChange={(event) => { setMinimaxKey(event.target.value); sessionStorage.setItem(MINIMAX_KEY_STORAGE, event.target.value); setVoiceStatus(""); }} />
+        </label>
+        <label className="field-label">Group ID
+          <input value={voiceConfig.groupId} autoComplete="off" placeholder="控制台账户信息里那串数字（国际站账号留空）"
+            onChange={(event) => setVoiceConfig({ ...voiceConfig, groupId: event.target.value.trim() })} />
+        </label>
+        <label className="field-label">Voice ID
+          <input value={voiceConfig.voiceId} autoComplete="off" placeholder="Voice Library 里那个克隆音色的 voice_id"
+            onChange={(event) => setVoiceConfig({ ...voiceConfig, voiceId: event.target.value.trim() })} />
+        </label>
+        <label className="field-label">模型
+          <input value={voiceConfig.model} autoComplete="off" placeholder="speech-02-hd"
+            onChange={(event) => setVoiceConfig({ ...voiceConfig, model: event.target.value.trim() })} />
+        </label>
+        <label className="field-label">接口地址
+          <input type="url" value={voiceConfig.endpoint} autoComplete="off" placeholder={defaultVoiceConfig.endpoint} list="minimax-endpoints"
+            onChange={(event) => setVoiceConfig({ ...voiceConfig, endpoint: event.target.value.trim() })} />
+        </label>
+        <label className="field-label">语速 {voiceConfig.speed.toFixed(1)}×
+          <input type="range" min="0.5" max="2" step="0.1" value={voiceConfig.speed}
+            onChange={(event) => setVoiceConfig({ ...voiceConfig, speed: Number(event.target.value) })} />
+        </label>
+        <div className="mcp-row">
+          <button className={voiceConfig.autoPlay ? "mini-switch on" : "mini-switch"} onClick={() => setVoiceConfig({ ...voiceConfig, autoPlay: !voiceConfig.autoPlay })} aria-label="自动朗读"><i /></button>
+          <span><strong>语音消息自动播放</strong><small>收到语音消息时直接响，不用点</small></span>
+        </div>
+        <button className="solid-action" onClick={testVoice} disabled={testingVoice}>{testingVoice ? "正在合成…" : "试听"}</button>
+        {voiceStatus && <p className={voiceStatus.startsWith("试听") ? "success-note" : "error-note"}>{voiceStatus}</p>}
+        <datalist id="minimax-endpoints">
+          <option value="https://api.minimax.chat/v1/t2a_v2">国内站 platform.minimaxi.com</option>
+          <option value="https://api.minimaxi.com/v1/t2a_v2">国内站（备用域名）</option>
+          <option value="https://api.minimax.io/v1/t2a_v2">国际站 platform.minimax.io</option>
+        </datalist>
+        <div className="capability-check">
+          <p className="eyebrow">运行环境自检</p>
+          <ul>
+            <li><b>{sttSupported ? "✓" : "✗"}</b> 语音识别 {sttSupported ? "可用" : "不可用（发语音、打电话都会被挡）"}</li>
+            <li><b>{voiceReady ? "✓" : "✗"}</b> MiniMax {voiceReady ? "已配置" : "还没填 Key 或 Voice ID"}</li>
+            <li><b>{standaloneMode ? "主屏" : "浏览器"}</b> 当前以{standaloneMode ? "主屏 App 方式打开（语音识别在这里常常不可用）" : "浏览器方式打开"}</li>
+          </ul>
+        </div>
+        <p className="setting-note">Key 只存在当前浏览器会话，关掉就没了；其余几项会保存在这台设备。<br/>{profile.name || "Rune"} 会自己判断什么时候用语音说话（情绪浓的时候），不是每条都念，所以不会一直烧额度。语音识别用系统自带能力，不额外收费。</p>
+      </section>
+
       <section className="settings-section">
         <div className="settings-heading"><p className="eyebrow">Tools</p><h2>MCP 连接</h2></div>
         <div className="mcp-list">
@@ -1431,6 +1859,14 @@ function SplashScreen({ leaving }: { leaving: boolean }) {
   );
 }
 
+function NavIcon({ name }: { name: "home" | "chat" | "diary" | "settings" }) {
+  const common = { width: 22, height: 22, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 1.8, strokeLinecap: "round" as const, strokeLinejoin: "round" as const, "aria-hidden": true };
+  if (name === "home") return <svg {...common}><path d="M3.8 10.7 12 3.8l8.2 6.9"/><path d="M5.8 9.5v10.2h12.4V9.5"/><path d="M9.4 19.7v-5.9h5.2v5.9"/></svg>;
+  if (name === "chat") return <svg {...common}><path d="M20.2 11.3a7.7 7.7 0 0 1-8.1 7.3 9.6 9.6 0 0 1-3.2-.6l-4.6 1.5 1.5-4a7 7 0 0 1-1.3-4.2A7.7 7.7 0 0 1 12.3 4a7.7 7.7 0 0 1 7.9 7.3Z"/><path d="M8.6 11.4h.1m3.3 0h.1m3.3 0h.1"/></svg>;
+  if (name === "diary") return <svg {...common}><path d="M6.2 3.5h10.2a2 2 0 0 1 2 2v15H7.6a2 2 0 0 1-2-2v-13a2 2 0 0 1 .6-1.4Z"/><path d="M8.8 3.5v17M11.5 8h4.1m-4.1 3.4h4.1"/></svg>;
+  return <svg {...common}><circle cx="12" cy="12" r="3.2"/><path d="M12 2.8v2m0 14.4v2m9.2-9.2h-2M4.8 12h-2m15.7-6.5-1.4 1.4M6.9 17.1l-1.4 1.4m13 0-1.4-1.4M6.9 6.9 5.5 5.5"/></svg>;
+}
+
 export default function Pulse() {
   const [tab, setTab] = useState<Tab>("home");
   const [theme, setTheme] = useState<ThemeName>("paper");
@@ -1438,11 +1874,13 @@ export default function Pulse() {
   const [health, setHealth] = useState<HealthSummary>({});
   const [mcpServers, setMcpServers] = useState<McpServer[]>(defaultMcpServers);
   const [metDate, setMetDate] = useState("");
-  const [aiApiBase, setAiApiBase] = useState("https://api.anthropic.com/v1");
   const [claudeKey, setClaudeKey] = useState("");
+  const [aiApiBase, setAiApiBase] = useState("https://api.anthropic.com/v1");
   const [claudeModel, setClaudeModel] = useState("");
   const [claudeModels, setClaudeModels] = useState<ClaudeModel[]>([]);
   const [profile, setProfile] = useState<Profile>(defaultProfile);
+  const [voiceConfig, setVoiceConfig] = useState<VoiceConfig>(defaultVoiceConfig);
+  const [minimaxKey, setMinimaxKey] = useState("");
   const [homeMessage, setHomeMessage] = useState("今天也辛苦了。");
   const [homeMessageAt, setHomeMessageAt] = useState<number | null>(null);
   const [hydrated, setHydrated] = useState(false);
@@ -1476,12 +1914,9 @@ export default function Pulse() {
         if (data.metDate) setMetDate(data.metDate);
         if (data.homeMessage) setHomeMessage(data.homeMessage);
         if (data.homeMessageAt) setHomeMessageAt(data.homeMessageAt);
-        if (data.profile) {
-          const storedProfile = { ...defaultProfile, ...data.profile } as Profile;
-          // 旧版本曾错误写入这个默认昵称；更新后自动迁移为中性的“用户”。
-          if (storedProfile.userName === "沈澈") storedProfile.userName = "用户";
-          setProfile(storedProfile);
-        }
+        if (data.profile) setProfile({ ...defaultProfile, ...data.profile });
+        if (data.voiceConfig) setVoiceConfig({ ...defaultVoiceConfig, ...data.voiceConfig });
+      setMinimaxKey(sessionStorage.getItem(MINIMAX_KEY_STORAGE) || "");
       }
       setClaudeKey(sessionStorage.getItem("rune-claude-key") || "");
       setAiApiBase(sessionStorage.getItem("rune-ai-api-base") || "https://api.anthropic.com/v1");
@@ -1496,7 +1931,7 @@ export default function Pulse() {
   useEffect(() => {
     if (typeof globalThis.document === "undefined") return;
     if (!hydrated) return;
-    localStorage.setItem("pulse-preferences", JSON.stringify({ theme, anniversaries, health, mcpServers, metDate, homeMessage, homeMessageAt, profile }));
+    localStorage.setItem("pulse-preferences", JSON.stringify({ theme, anniversaries, health, mcpServers, metDate, homeMessage, homeMessageAt, profile, voiceConfig }));
   }, [theme, anniversaries, health, mcpServers, metDate, homeMessage, homeMessageAt, profile, hydrated]);
 
   useEffect(() => {
@@ -1505,7 +1940,7 @@ export default function Pulse() {
   }, [claudeModel]);
 
   useEffect(() => {
-    if (typeof globalThis.document === "undefined" || !aiApiBase) return;
+    if (typeof globalThis.document === "undefined") return;
     sessionStorage.setItem("rune-ai-api-base", normalizeAiApiBase(aiApiBase));
   }, [aiApiBase]);
 
@@ -1517,15 +1952,15 @@ export default function Pulse() {
       <div className="phone-shell">
         <div className="status-spacer" />
         {tab === "home" && <HomeView goDiary={() => setTab("diary")} goChat={() => setTab("chat")} goSettings={() => setTab("settings")} anniversaries={anniversaries} health={health} metDate={metDate} homeMessage={homeMessage} homeMessageAt={homeMessageAt} profile={profile} />}
-        {tab === "chat" && <ChatView aiApiBase={aiApiBase} claudeKey={claudeKey} claudeModel={claudeModel} claudeModels={claudeModels} setClaudeModel={setClaudeModel} goSettings={() => setTab("settings")} mcpServers={mcpServers} setHomeMessage={updateHomeMessage} profile={profile} />}
-        {tab === "diary" && <DiaryView userName={profile.userName} />}
-        {tab === "settings" && <SettingsView aiApiBase={aiApiBase} setAiApiBase={setAiApiBase} theme={theme} setTheme={setTheme} anniversaries={anniversaries} setAnniversaries={setAnniversaries} health={health} setHealth={setHealth} mcpServers={mcpServers} setMcpServers={setMcpServers} metDate={metDate} setMetDate={setMetDate} claudeKey={claudeKey} setClaudeKey={setClaudeKey} claudeModel={claudeModel} setClaudeModel={setClaudeModel} claudeModels={claudeModels} setClaudeModels={setClaudeModels} profile={profile} setProfile={setProfile} />}
+        {tab === "chat" && <ChatView aiApiBase={aiApiBase} claudeKey={claudeKey} claudeModel={claudeModel} claudeModels={claudeModels} setClaudeModel={setClaudeModel} goSettings={() => setTab("settings")} mcpServers={mcpServers} setHomeMessage={updateHomeMessage} profile={profile} voiceConfig={voiceConfig} minimaxKey={minimaxKey} />}
+        {tab === "diary" && <DiaryView profile={profile} />}
+        {tab === "settings" && <SettingsView aiApiBase={aiApiBase} setAiApiBase={setAiApiBase} theme={theme} setTheme={setTheme} anniversaries={anniversaries} setAnniversaries={setAnniversaries} health={health} setHealth={setHealth} mcpServers={mcpServers} setMcpServers={setMcpServers} metDate={metDate} setMetDate={setMetDate} claudeKey={claudeKey} setClaudeKey={setClaudeKey} claudeModel={claudeModel} setClaudeModel={setClaudeModel} claudeModels={claudeModels} setClaudeModels={setClaudeModels} profile={profile} setProfile={setProfile} voiceConfig={voiceConfig} setVoiceConfig={setVoiceConfig} minimaxKey={minimaxKey} setMinimaxKey={setMinimaxKey} />}
 
         <nav className="bottom-nav" aria-label="主导航">
-          <button className={tab === "home" ? "active" : ""} onClick={() => setTab("home")} aria-label="首页"><i>⌂</i><span>Home</span></button>
-          <button className={tab === "chat" ? "active" : ""} onClick={() => setTab("chat")} aria-label="对话"><i>◌</i><span>Chats</span></button>
-          <button className={tab === "diary" ? "active" : ""} onClick={() => setTab("diary")} aria-label="日记"><i>□</i><span>Diary</span></button>
-          <button className={tab === "settings" ? "active" : ""} onClick={() => setTab("settings")} aria-label="设置"><i>⌘</i><span>Settings</span></button>
+          <button className={tab === "home" ? "active" : ""} onClick={() => setTab("home")} aria-label="首页"><i><NavIcon name="home" /></i><span>Home</span></button>
+          <button className={tab === "chat" ? "active" : ""} onClick={() => setTab("chat")} aria-label="对话"><i><NavIcon name="chat" /></i><span>Chats</span></button>
+          <button className={tab === "diary" ? "active" : ""} onClick={() => setTab("diary")} aria-label="日记"><i><NavIcon name="diary" /></i><span>Diary</span></button>
+          <button className={tab === "settings" ? "active" : ""} onClick={() => setTab("settings")} aria-label="设置"><i><NavIcon name="settings" /></i><span>Settings</span></button>
         </nav>
         <span className="sr-only" aria-live="polite">当前页面：{tabTitle}</span>
       </div>

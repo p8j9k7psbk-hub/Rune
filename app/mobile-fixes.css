@@ -1,0 +1,52 @@
+.voice-call-button svg {
+  width: 15px;
+  height: 15px;
+  margin: auto;
+  fill: currentColor;
+}
+
+.claude-chat-header .voice-call-button.active {
+  color: var(--accent-contrast);
+  background: var(--accent);
+  border-color: transparent;
+  animation: rune-listening 1.15s ease-in-out infinite;
+}
+
+@keyframes rune-listening {
+  50% { box-shadow: 0 0 0 5px color-mix(in srgb, var(--accent) 18%, transparent); }
+}
+
+.provider-label {
+  color: var(--muted);
+  margin: 0 0 7px;
+  font-size: 10px;
+}
+
+.api-presets {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 7px;
+  margin-bottom: 12px;
+}
+
+.api-presets button {
+  min-height: 37px;
+  color: var(--ink);
+  cursor: pointer;
+  background: var(--surface-strong);
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  font-size: 11px;
+}
+
+@media (max-width: 699px) {
+  input,
+  textarea,
+  select {
+    font-size: 16px !important;
+  }
+
+  .claude-composer textarea {
+    font-size: 16px !important;
+  }
+}

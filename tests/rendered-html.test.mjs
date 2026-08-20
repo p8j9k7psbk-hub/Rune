@@ -52,6 +52,9 @@ test("keeps required AI, voice, and mobile behavior", async () => {
   assert.match(page, /className="voice-call-button call-button"/);
   assert.match(page, /"mic-button recording"/);
   assert.match(page, /runVoiceChecks/);
+  assert.match(page, /requestMicrophonePermission/);
+  assert.match(page, /请求权限/);
+  assert.match(page, /globalThis\.isSecureContext/);
   assert.match(page, /麦克风权限/);
   assert.match(page, /MiniMax 可否调用/);
   assert.match(page, /当前打开界面/);

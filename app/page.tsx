@@ -7,7 +7,8 @@ type Tab = "home" | "chat" | "diary" | "settings";
 type ThemeName = "paper" | "sage" | "ink" | "claude";
 type Anniversary = { id: number; name: string; date: string };
 type HealthSummary = { steps?: number; heartRate?: number; importedAt?: string; week?: number[] };
-type McpServer = { id: number; name: string; url: string; enabled: boolean; requiresAuth?: boolean };
+type McpServer = { id: number; name: string; url: string; enabled: boolean; requiresAuth?: boolean; token?: string };
+type McpTool = { name: string; description?: string; inputSchema?: Record<string, unknown> };
 type Todo = { id: number; text: string; meta: string; done: boolean };
 type ClaudeModel = { id: string; display_name: string; created_at?: string };
 type ChatAttachment = { id: number; name: string; kind: "image" | "text"; mediaType: string; data: string };
@@ -71,6 +72,47 @@ function normalizeAiApiBase(value: string) {
 
 function apiProtocolFor(base: string): ApiProtocol {
   return /(^|\.)anthropic\.com\b|\/anthropic\b/i.test(base) ? "anthropic" : "openai";
+}
+
+function parseMcpPayload(text: string) {
+  const direct = text.trim();
+  if (!direct) return null;
+  if (!direct.startsWith("data:")) return JSON.parse(direct);
+  const data = direct.split(/\r?\n/).filter((line) => line.startsWith("data:"))
+    .map((line) => line.slice(5).trim()).filter((line) => line && line !== "[DONE]").at(-1);
+  return data ? JSON.parse(data) : null;
+}
+
+async function callMcpRpc(server: McpServer, method: string, params: Record<string, unknown>, sessionId?: string) {
+  const response = await fetch(server.url, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      accept: "application/json, text/event-stream",
+      "mcp-protocol-version": "2025-06-18",
+      ...(sessionId ? { "mcp-session-id": sessionId } : {}),
+      ...(server.token ? { authorization: `Bearer ${server.token}` } : {}),
+    },
+    body: JSON.stringify({ jsonrpc: "2.0", id: `${Date.now()}-${Math.random()}`, method, params }),
+  });
+  if (!response.ok) throw new Error(`${server.name} MCP 返回 HTTP ${response.status}`);
+  const payload = parseMcpPayload(await response.text());
+  if (payload?.error) throw new Error(payload.error.message || `${server.name} MCP 调用失败`);
+  return { result: payload?.result, sessionId: response.headers.get("mcp-session-id") || sessionId };
+}
+
+async function notifyMcpInitialized(server: McpServer, sessionId?: string) {
+  await fetch(server.url, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      accept: "application/json, text/event-stream",
+      "mcp-protocol-version": "2025-06-18",
+      ...(sessionId ? { "mcp-session-id": sessionId } : {}),
+      ...(server.token ? { authorization: `Bearer ${server.token}` } : {}),
+    },
+    body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }),
+  });
 }
 
 type StoredConversation = { id: number; title: string; updatedAt: number; messages: ChatMessage[] };
@@ -706,7 +748,23 @@ function ChatView({
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const callActiveRef = useRef(false);
+  const mcpSessionsRef = useRef<Record<number, { sessionId?: string; tools: McpTool[] }>>({});
   const voiceReady = Boolean(minimaxKey && voiceConfig.voiceId);
+
+  const connectMcpServer = async (server: McpServer) => {
+    const cached = mcpSessionsRef.current[server.id];
+    if (cached) return cached;
+    const initialized = await callMcpRpc(server, "initialize", {
+      protocolVersion: "2025-06-18",
+      capabilities: {},
+      clientInfo: { name: "Rune", version: "1.0" },
+    });
+    await notifyMcpInitialized(server, initialized.sessionId);
+    const listed = await callMcpRpc(server, "tools/list", {}, initialized.sessionId);
+    const connection = { sessionId: listed.sessionId, tools: (listed.result?.tools || []) as McpTool[] };
+    mcpSessionsRef.current[server.id] = connection;
+    return connection;
+  };
 
   useEffect(() => {
     messagesRef.current = messages;
@@ -1124,7 +1182,7 @@ function ChatView({
 
     setSending(true);
     try {
-      const enabledMcp = mcpServers.filter((server) => server.enabled && !server.requiresAuth && /^https:\/\//.test(server.url));
+      const enabledMcp = mcpServers.filter((server) => server.enabled && /^https:\/\//.test(server.url));
       const runeTools = [
         { name: "add_todo", description: "在 Rune Diary 的指定日期添加待办。任何写入都必须先向用户展示确认。", input_schema: { type: "object", properties: { date: { type: "string", description: "YYYY-MM-DD" }, text: { type: "string" } }, required: ["date", "text"] } },
         { name: "write_diary", description: "在 Rune Diary 的指定日期写入日记。任何写入都必须先向用户展示确认。", input_schema: { type: "object", properties: { date: { type: "string", description: "YYYY-MM-DD" }, content: { type: "string" } }, required: ["date", "content"] } },
@@ -1133,15 +1191,40 @@ function ChatView({
       ];
       const apiBase = normalizeAiApiBase(aiApiBase);
       const protocol = apiProtocolFor(apiBase);
+      const mcpToolMap = new Map<string, { server: McpServer; tool: McpTool; sessionId?: string }>();
+      if (protocol === "openai") {
+        for (const server of enabledMcp) {
+          try {
+            const connection = await connectMcpServer(server);
+            for (const tool of connection.tools) {
+              const safeName = `mcp_${server.id}_${tool.name}`.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 64);
+              mcpToolMap.set(safeName, { server, tool, sessionId: connection.sessionId });
+            }
+          } catch (error) {
+            setChatNotice(`${server.name} MCP 连接失败：${error instanceof Error ? error.message : "请检查地址、授权和 CORS"}`);
+          }
+        }
+      }
       const systemPrompt = `${profile.instructions || defaultProfile.instructions}\n\n${nowContext()}\n需要修改 ${profile.name || "Rune"} 数据或创建提醒时必须调用对应工具，不要假装已经完成。
 ${voiceReady ? "当这句话情绪比较浓、更适合说出来而不是打字时（安慰、想念、认真的鼓励、道歉之类），在回复最前面加上 [[voice]] 标记，它会以语音消息的形式发过去。日常闲聊、查信息、确认事项不要加。一次对话里别频繁使用。" : ""}`;
       const endpoint = protocol === "anthropic" ? `${apiBase}/messages` : `${apiBase}/chat/completions`;
+      const openAiMessages = [
+        { role: "system", content: systemPrompt },
+        ...nextMessages.map((message) => ({ role: message.role, content: message.text || "（含附件的消息）" })),
+      ];
+      const openAiTools = [
+        ...runeTools.map((tool) => ({ type: "function", function: { name: tool.name, description: tool.description, parameters: tool.input_schema } })),
+        ...Array.from(mcpToolMap.entries()).map(([name, item]) => ({
+          type: "function",
+          function: { name, description: `[${item.server.name} MCP] ${item.tool.description || item.tool.name}`, parameters: item.tool.inputSchema || { type: "object", properties: {} } },
+        })),
+      ];
       const response = await fetch(endpoint, {
         method: "POST",
         headers: protocol === "anthropic" ? {
           "content-type": "application/json", "x-api-key": claudeKey,
           "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true",
-          ...(enabledMcp.length ? { "anthropic-beta": "mcp-client-2025-11-20" } : {}),
+          ...(enabledMcp.length ? { "anthropic-beta": "mcp-client-2025-04-04" } : {}),
         } : { "content-type": "application/json", authorization: `Bearer ${claudeKey}` },
         body: JSON.stringify(protocol === "anthropic" ? {
           model: claudeModel,
@@ -1164,19 +1247,41 @@ ${voiceReady ? "当这句话情绪比较浓、更适合说出来而不是打字�
             ...runeTools,
             ...enabledMcp.map((server) => ({ type: "mcp_toolset", mcp_server_name: server.name })),
           ],
-          ...(enabledMcp.length ? { mcp_servers: enabledMcp.map((server) => ({ type: "url", url: server.url, name: server.name })) } : {}),
+          ...(enabledMcp.length ? { mcp_servers: enabledMcp.map((server) => ({ type: "url", url: server.url, name: server.name, ...(server.token ? { authorization_token: server.token } : {}) })) } : {}),
         } : {
           model: claudeModel,
           max_tokens: 2048,
-          messages: [
-            { role: "system", content: systemPrompt },
-            ...nextMessages.map((message) => ({ role: message.role, content: message.text || "（含附件的消息）" })),
-          ],
-          tools: runeTools.map((tool) => ({ type: "function", function: { name: tool.name, description: tool.description, parameters: tool.input_schema } })),
+          messages: openAiMessages,
+          tools: openAiTools,
         }),
       });
-      const data = await response.json();
+      let data = await response.json();
       if (!response.ok) throw new Error(data?.error?.message || "AI API 请求失败");
+      if (protocol === "openai") {
+        const assistantMessage = data.choices?.[0]?.message;
+        const externalCalls = (assistantMessage?.tool_calls || []).filter((call: { function?: { name?: string } }) => mcpToolMap.has(call.function?.name || ""));
+        if (externalCalls.length) {
+          const toolResults = [];
+          for (const call of externalCalls) {
+            const mapped = mcpToolMap.get(call.function.name)!;
+            let args: Record<string, unknown> = {};
+            try { args = JSON.parse(call.function.arguments || "{}"); } catch { args = {}; }
+            try {
+              const called = await callMcpRpc(mapped.server, "tools/call", { name: mapped.tool.name, arguments: args }, mapped.sessionId);
+              toolResults.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify(called.result ?? {}) });
+            } catch (error) {
+              toolResults.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify({ error: error instanceof Error ? error.message : "MCP 调用失败" }) });
+            }
+          }
+          const followup = await fetch(endpoint, {
+            method: "POST",
+            headers: { "content-type": "application/json", authorization: `Bearer ${claudeKey}` },
+            body: JSON.stringify({ model: claudeModel, max_tokens: 2048, messages: [...openAiMessages, assistantMessage, ...toolResults], tools: openAiTools }),
+          });
+          data = await followup.json();
+          if (!followup.ok) throw new Error(data?.error?.message || "MCP 结果回传模型失败");
+        }
+      }
       const reply = protocol === "anthropic"
         ? (data.content || []).filter((block: { type: string }) => block.type === "text").map((block: { text: string }) => block.text).join("\n")
         : String(data.choices?.[0]?.message?.content || "");
@@ -1428,7 +1533,7 @@ function SettingsView({
   const fileRef = useRef<HTMLInputElement>(null);
   const [claudeStatus, setClaudeStatus] = useState("");
   const [loadingModels, setLoadingModels] = useState(false);
-  const [newMcp, setNewMcp] = useState({ name: "", url: "" });
+  const [newMcp, setNewMcp] = useState({ name: "", url: "", token: "" });
   const [avatarNote, setAvatarNote] = useState("");
   const voiceReady = Boolean(minimaxKey && voiceConfig.voiceId);
   const [voiceStatus, setVoiceStatus] = useState("");
@@ -1617,8 +1722,8 @@ function SettingsView({
 
   const addMcp = () => {
     if (!newMcp.name.trim() || !newMcp.url.trim()) return;
-    setMcpServers([...mcpServers, { id: Date.now(), name: newMcp.name.trim(), url: newMcp.url.trim(), enabled: true }]);
-    setNewMcp({ name: "", url: "" });
+    setMcpServers([...mcpServers, { id: Date.now(), name: newMcp.name.trim(), url: newMcp.url.trim(), token: newMcp.token.trim(), enabled: true, requiresAuth: Boolean(newMcp.token.trim()) }]);
+    setNewMcp({ name: "", url: "", token: "" });
   };
 
   const loadClaudeModels = async () => {
@@ -1832,7 +1937,7 @@ function SettingsView({
           {mcpServers.map((server) => (
             <div className="mcp-row" key={server.id}>
               <button className={server.enabled ? "mini-switch on" : "mini-switch"} onClick={() => setMcpServers(mcpServers.map((item) => item.id === server.id ? { ...item, enabled: !item.enabled } : item))}><i /></button>
-              <span><strong>{server.name}</strong><small>{server.url}</small></span>
+              <span><strong>{server.name}</strong><small>{server.url}</small><input className="mcp-token" type="password" value={server.token || ""} onChange={(event) => setMcpServers(mcpServers.map((item) => item.id === server.id ? { ...item, token: event.target.value, requiresAuth: Boolean(event.target.value) } : item))} placeholder="OAuth / Bearer Token（可选）" aria-label={`${server.name} MCP Token`} /></span>
               <button className="remove-row" onClick={() => setMcpServers(mcpServers.filter((item) => item.id !== server.id))}>×</button>
             </div>
           ))}
@@ -1840,6 +1945,7 @@ function SettingsView({
         <div className="mcp-add">
           <input value={newMcp.name} onChange={(event) => setNewMcp({ ...newMcp, name: event.target.value })} placeholder="名称，如 Notion" />
           <input value={newMcp.url} onChange={(event) => setNewMcp({ ...newMcp, url: event.target.value })} placeholder="https://…/mcp" />
+          <input type="password" value={newMcp.token} onChange={(event) => setNewMcp({ ...newMcp, token: event.target.value })} placeholder="OAuth / Bearer Token（可选）" />
           <button className="outline-action" onClick={addMcp}>＋ 添加 MCP</button>
         </div>
       </section>

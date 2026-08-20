@@ -2209,17 +2209,24 @@ export default function Pulse() {
   useEffect(() => {
     if (typeof window === "undefined" || !window.visualViewport) return;
     const viewport = window.visualViewport;
+    let layoutHeight = Math.max(window.innerHeight, viewport.height);
     const updateKeyboardCover = () => {
-      const layoutHeight = Math.max(window.innerHeight, document.documentElement.clientHeight);
+      const active = document.activeElement as HTMLElement | null;
+      const isTyping = !!active && (active.tagName === "INPUT" || active.tagName === "TEXTAREA" || active.isContentEditable);
+      if (!isTyping) layoutHeight = Math.max(window.innerHeight, viewport.height);
       const covered = Math.max(0, layoutHeight - viewport.height - viewport.offsetTop);
       document.documentElement.style.setProperty("--keyboard-cover", `${covered}px`);
     };
     updateKeyboardCover();
     viewport.addEventListener("resize", updateKeyboardCover);
     viewport.addEventListener("scroll", updateKeyboardCover);
+    document.addEventListener("focusin", updateKeyboardCover);
+    document.addEventListener("focusout", updateKeyboardCover);
     return () => {
       viewport.removeEventListener("resize", updateKeyboardCover);
       viewport.removeEventListener("scroll", updateKeyboardCover);
+      document.removeEventListener("focusin", updateKeyboardCover);
+      document.removeEventListener("focusout", updateKeyboardCover);
       document.documentElement.style.removeProperty("--keyboard-cover");
     };
   }, []);

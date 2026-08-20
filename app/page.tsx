@@ -1515,7 +1515,7 @@ ${voiceReady ? "当这句话情绪比较浓、更适合说出来而不是打字�
           placeholder={`和 ${profile.name || "Rune"} 说点什么…`}
           aria-label="消息内容"
           rows={1}
-        /><button className="send-button" onClick={() => sendMessage()} disabled={(!input.trim() && !attachments.length) || sending} aria-label="发送消息">↑</button></div>
+        /></div>
         <input ref={attachmentRef} className="hidden-file" type="file" multiple accept="image/*,.txt,.md,.json,.csv,text/*" onChange={(event) => addAttachments(event.target.files)} />
         <div className="composer-tools">
           <button className="attach-button" onClick={() => attachmentRef.current?.click()} aria-label="添加附件">＋</button>
@@ -1531,6 +1531,7 @@ ${voiceReady ? "当这句话情绪比较浓、更适合说出来而不是打字�
               {claudeModels.map((model) => <option key={model.id} value={model.id}>{model.display_name || model.id}</option>)}
             </select>
           ) : <small>{selectedModel?.display_name || "AI"}</small>}
+          <button className="send-button" onClick={() => sendMessage()} disabled={(!input.trim() && !attachments.length) || sending} aria-label="发送消息">↑</button>
         </div>
       </div>
     </main>

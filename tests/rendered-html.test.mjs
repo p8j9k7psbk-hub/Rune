@@ -69,7 +69,9 @@ test("keeps required AI, voice, and mobile behavior", async () => {
   assert.match(page, /"tools\/call"/);
   assert.match(page, /mcp_toolset/);
   assert.match(page, /authorization_token/);
-  assert.match(page, /OAuth \/ Bearer Token/);
+  assert.match(page, /startMcpOAuth/);
+  assert.match(page, /无 OAuth/);
+  assert.match(page, /Bark Device Key/);
   assert.match(page, /麦克风权限/);
   assert.match(page, /MiniMax 可否调用/);
   assert.match(page, /当前打开界面/);

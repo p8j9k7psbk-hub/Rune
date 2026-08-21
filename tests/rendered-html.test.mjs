@@ -57,7 +57,7 @@ test("keeps required AI, voice, and mobile behavior", async () => {
   assert.match(page, /messageStreamRef/);
   assert.match(page, /rows=\{1\}/);
   assert.match(page, /claude-composer[\s\S]*chat-model-select/);
-  assert.match(page, /释放扬声器音频会话/);
+  assert.match(page, /输出音频会话交还给麦克风/);
   assert.match(page, /正在重试/);
   assert.match(page, /请求权限/);
   assert.match(page, /globalThis\.isSecureContext/);
@@ -77,6 +77,9 @@ test("keeps required AI, voice, and mobile behavior", async () => {
   assert.match(page, /Duration:/);
   assert.match(page, /旧语音通话/);
   assert.match(page, /start_voice_call/);
+  assert.match(page, /directCallRequested/);
+  assert.match(page, /releaseCallSpeaker/);
+  assert.match(page, /继续说/);
   assert.match(page, /编辑前记录/);
   assert.match(page, /\[\[split\]\]/);
   assert.match(page, /\[\[voice\]\]/);

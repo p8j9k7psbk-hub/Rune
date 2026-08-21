@@ -47,6 +47,10 @@
 
   .claude-composer textarea {
     font-size: 16px !important;
+    /* iOS 用 16px 避免聚焦放大，再缩放回与 12px 聊天正文一致的视觉尺寸。 */
+    zoom: .75;
+    min-height: 45px;
+    max-height: 117px;
   }
 
   .claude-composer .chat-model-select {

@@ -871,7 +871,7 @@ function ChatView({
   const [shownText, setShownText] = useState<Record<number, boolean>>({});
   const clipsRef = useRef<Record<number, VoiceClip>>({});
   const [callActive, setCallActive] = useState(false);
-  const [callStage, setCallStage] = useState<"idle" | "listening" | "thinking" | "speaking">("idle");
+  const [callStage, setCallStage] = useState<"idle" | "listening" | "thinking" | "speaking" | "waiting">("idle");
   const [callReply, setCallReply] = useState("");
   const [callDuration, setCallDuration] = useState(0);
   const [callRecords, setCallRecords] = useState<VoiceCallRecord[]>([]);
@@ -887,6 +887,7 @@ function ChatView({
   const callFinalizedRef = useRef(true);
   const callInitiatorRef = useRef<"user" | "assistant">("user");
   const lastAssistantSpeechRef = useRef("");
+  const callLoopRef = useRef(false);
   const mcpSessionsRef = useRef<Record<number, { sessionId?: string; tools: McpTool[] }>>({});
   const voiceReady = Boolean(minimaxKey && voiceConfig.voiceId);
 
@@ -917,11 +918,17 @@ function ChatView({
 
   useEffect(() => {
     if (typeof globalThis.location === "undefined") return;
-    if (new URLSearchParams(globalThis.location.search).get("preview") !== "voice-call") return;
-    setCallActive(true);
-    callActiveRef.current = true;
-    setCallStage("speaking");
-    setCallReply("我在。慢慢说，我会听着。 ");
+    const preview = new URLSearchParams(globalThis.location.search).get("preview");
+    if (preview === "incoming-call") {
+      setIncomingCall({ reason: "想听听你的声音" });
+      return;
+    }
+    if (preview === "voice-call") {
+      setCallActive(true);
+      callActiveRef.current = true;
+      setCallStage("speaking");
+      setCallReply("我在。慢慢说，我会听着。 ");
+    }
   }, []);
 
   useEffect(() => {
@@ -1004,6 +1011,9 @@ function ChatView({
       audio.onerror = () => resolve();
       audio.play().catch(() => { blocked = true; resolve(); });
     });
+    audio.pause();
+    audio.removeAttribute("src");
+    audio.load();
     URL.revokeObjectURL(url);
     if (blocked && callActiveRef.current) await speakWithSystemVoice(text);
     if (audioRef.current === audio) audioRef.current = null;
@@ -1061,6 +1071,7 @@ function ChatView({
     recognition.interimResults = true;
     recognitionRef.current = recognition;
     let finalText = "";
+    let bestText = "";
     let settled = false;
     const finish = (text: string) => {
       if (settled) return;
@@ -1074,19 +1085,20 @@ function ChatView({
         const text = result[0]?.transcript || "";
         if (result.isFinal) finalText += text; else interim += text;
       }
-      setLiveTranscript(finalText + interim);
+      bestText = finalText + interim;
+      setLiveTranscript(bestText);
     };
     recognition.onerror = (event) => {
       recognitionRef.current = null;
       setListening(false);
-      if (event.error === "no-speech" || event.error === "aborted") { finish(finalText); return; }
+      if (event.error === "no-speech" || event.error === "aborted") { finish(finalText || bestText); return; }
       settled = true;
       reject(new Error(event.error === "not-allowed" ? "麦克风权限被拒绝了。" : `语音识别出错：${event.error}`));
     };
     recognition.onend = () => {
       recognitionRef.current = null;
       setListening(false);
-      finish(finalText);
+      finish(finalText || bestText);
     };
     setListening(true);
     setLiveTranscript("");
@@ -1139,11 +1151,34 @@ function ChatView({
     callTurnsRef.current = [];
   };
 
+  const prepareCallMicrophone = async () => {
+    if (!navigator.mediaDevices?.getUserMedia) return;
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    stream.getTracks().forEach((track) => track.stop());
+    await new Promise((resolve) => globalThis.setTimeout(resolve, 220));
+  };
+
+  const releaseCallSpeaker = async () => {
+    globalThis.speechSynthesis?.cancel();
+    const audio = callAudioRef.current;
+    if (audio) {
+      audio.pause();
+      audio.removeAttribute("src");
+      audio.load();
+    }
+    // iOS 要等系统把输出音频会话交还给麦克风，立刻 start() 常会结束在第二轮。
+    await new Promise((resolve) => globalThis.setTimeout(resolve, 720));
+  };
+
   // 通话模式：听 → 发 → 朗读 → 再听，循环到挂断
   const runCall = async () => {
+    if (callLoopRef.current) return;
+    callLoopRef.current = true;
     let retryCount = 0;
     while (callActiveRef.current) {
       try {
+        await releaseCallSpeaker();
+        if (!callActiveRef.current) break;
         setCallStage("listening");
         setCallReply("");
         const said = await listenOnce();
@@ -1166,20 +1201,22 @@ function ChatView({
           setCallReply(reply);      // 文字和语音同时出来
           setCallStage("speaking");
           await speak(spokenReply, null);
-          // iPhone 需要一点时间释放扬声器音频会话，再重新占用麦克风。
-          if (callActiveRef.current) await new Promise((resolve) => globalThis.setTimeout(resolve, 900));
+          // 下一轮开头会统一释放扬声器并重新占用麦克风。
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : "语音识别暂时中断。";
-        if (/权限|not-allowed|denied|HTTPS/i.test(message)) {
-          setChatNotice(message);
-          break;
-        }
         retryCount += 1;
+        if (retryCount >= 4) {
+          setCallStage("waiting");
+          setChatNotice(`${message} 点“继续说”可以重新连接麦克风。`);
+          callLoopRef.current = false;
+          return;
+        }
         setChatNotice(`语音识别暂时中断，正在重试（${retryCount}）…`);
         await new Promise((resolve) => globalThis.setTimeout(resolve, Math.min(1800, 500 + retryCount * 250)));
       }
     }
+    callLoopRef.current = false;
     setCallStage("idle");
     setCallActive(false);
     callActiveRef.current = false;
@@ -1198,11 +1235,26 @@ function ChatView({
     callFinalizedRef.current = false;
     setCallDuration(0);
     setShowHistory(false);
-    void runCall();
+    void prepareCallMicrophone()
+      .then(() => { if (callActiveRef.current) return runCall(); })
+      .catch((error) => {
+        setCallStage("waiting");
+        setChatNotice(`${error instanceof Error ? error.message : "麦克风连接失败。"} 点“继续说”重试。`);
+      });
+  };
+
+  const resumeCall = () => {
+    if (!callActiveRef.current) return;
+    unlockCallAudio();
+    setChatNotice("");
+    void prepareCallMicrophone()
+      .then(() => runCall())
+      .catch((error) => setChatNotice(error instanceof Error ? error.message : "麦克风连接失败。"));
   };
 
   const endCall = () => {
     callActiveRef.current = false;
+    callLoopRef.current = false;
     setCallActive(false);
     setCallStage("idle");
     setCallReply("");
@@ -1432,6 +1484,8 @@ function ChatView({
   const sendMessage = async (spokenText?: string, editIndex?: number, callOnly = false): Promise<string> => {
     const raw = (spokenText ?? input).trim();
     const text = raw;
+    const directCallRequested = !/(?:不|别|不要|不用).{0,6}(?:电话|语音通话)/.test(text)
+      && /(?:(?:给我|和我|找我|主动).{0,8}(?:打(?:个|一通)?电话|语音通话)|(?:打电话|语音通话).{0,6}(?:吧|好吗|可以吗))/.test(text);
     if ((!text && !attachments.length) || sending) return "";
     const editedMessage = editIndex === undefined ? undefined : messagesRef.current[editIndex];
     const outgoingAttachments = editedMessage?.attachments || attachments;
@@ -1462,6 +1516,9 @@ function ChatView({
       setAttachments([]);
       setEditingIndex(null);
       setEditDraft("");
+      // “给我打个电话”是明确指令：即使兼容模型没有正确返回 tool_call，
+      // Rune 也会可靠地弹出自己的来电界面。
+      if (directCallRequested && voiceReady) setIncomingCall({ reason: "想听听你的声音" });
     }
     if (editIndex !== undefined) {
       setActions([]);
@@ -1490,7 +1547,7 @@ function ChatView({
         { name: "write_diary", description: "在 Rune Diary 写日记。必须判断是在写用户自己的日记，还是 Rune/Agent 第一人称的日记，并通过 owner 区分。任何写入都必须先确认。", input_schema: { type: "object", properties: { owner: { type: "string", enum: ["user", "rune"], description: "user=用户的日记；rune=Rune/Agent 的日记" }, date: { type: "string", description: "YYYY-MM-DD" }, content: { type: "string" } }, required: ["owner", "date", "content"] } },
         { name: "set_home_message", description: "修改 Rune 首页顶部的主要问候文字。", input_schema: { type: "object", properties: { message: { type: "string" } }, required: ["message"] } },
         { name: "create_reminder", description: "创建 Rune 定时提醒、闹铃或模拟来电。根据用户意图选择 mode，并编辑自然的标题与正文。", input_schema: { type: "object", properties: { mode: { type: "string", enum: ["reminder", "alarm", "call"], description: "普通提醒、持续响铃闹钟、或 Rune 模拟来电" }, title: { type: "string", description: "简短通知标题" }, content: { type: "string", description: "由你编辑的通知正文" }, datetime: { type: "string", description: "带时区的 ISO 8601 时间" } }, required: ["mode", "title", "content", "datetime"] } },
-        { name: "start_voice_call", description: "当你真心希望立刻与用户进行实时语音通话时，主动发起来电。不要用于普通语音条，也不要频繁调用。", input_schema: { type: "object", properties: { reason: { type: "string", description: "一句简短自然的来电原因" } }, required: ["reason"] } },
+        { name: "start_voice_call", description: "立刻向用户发起 Rune 页面内的实时语音来电。当用户说‘给我打个电话’、‘现在语音通话’时必须调用；你自己真心希望听见用户声音时也可以主动调用。不要把普通语音条当作电话。", input_schema: { type: "object", properties: { reason: { type: "string", description: "一句简短自然、会显示在来电页上的原因" } }, required: ["reason"] } },
       ];
       const apiBase = normalizeAiApiBase(aiApiBase);
       const protocol = apiProtocolFor(apiBase);
@@ -1508,7 +1565,7 @@ function ChatView({
           }
         }
       }
-      const systemPrompt = `${profile.instructions || defaultProfile.instructions}\n\n${nowContext()}\n需要修改 ${profile.name || "Rune"} 数据、创建提醒或主动发起实时语音通话时必须调用对应工具，不要假装已经完成。
+      const systemPrompt = `${profile.instructions || defaultProfile.instructions}\n\n${nowContext()}\n需要修改 ${profile.name || "Rune"} 数据、创建提醒或主动发起实时语音通话时必须调用对应工具，不要假装已经完成。用户明确说“给我打个电话/现在语音通话”时必须调用 start_voice_call；你也可以在确实想听用户声音时自行调用它。
 你可以把一次回复拆成多个自然的聊天气泡，在气泡之间单独写 [[split]]。只在确实适合分开发送时使用，避免把每句话都切碎。
 ${voiceReady ? "你可以同时发送文字和语音：正常文字直接写；要额外生成语音条的内容放在 [[voice]] 与 [[/voice]] 之间。文字和语音内容可以不同。只发语音时可以只写语音区块。情绪浓、安慰、想念、鼓励或道歉时再使用，不要每条都发语音。" : "不要输出任何 [[voice]] 标记。"}`;
       const endpoint = protocol === "anthropic" ? `${apiBase}/messages` : `${apiBase}/chat/completions`;
@@ -1673,7 +1730,7 @@ ${voiceReady ? "你可以同时发送文字和语音：正常文字直接写；�
     }
   };
 
-  const callLabel = { idle: "接通中…", listening: "在听你说", thinking: "正在想", speaking: `${profile.name || "Rune"} 在说` }[callStage];
+  const callLabel = { idle: "接通中…", listening: "在听你说", thinking: "正在想", speaking: `${profile.name || "Rune"} 在说`, waiting: "麦克风需要重新连接" }[callStage];
 
   return (
     <main className="page claude-chat-page">
@@ -1714,6 +1771,7 @@ ${voiceReady ? "你可以同时发送文字和语音：正常文字直接写；�
               ? callReply
               : liveTranscript || (callStage === "listening" ? "说点什么…" : "")}
           </p>
+          {callStage === "waiting" && <button className="call-resume" onClick={resumeCall}>继续说</button>}
           <button className="call-end apple-call-button decline" onClick={endCall} aria-label="挂断"><PhoneDownIcon /><span>挂断</span></button>
         </div>
       )}

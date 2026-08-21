@@ -570,6 +570,7 @@ html[data-keyboard-open] .claude-composer { bottom:0; border-radius:17px 17px 0 
 .call-stage.speaking { color:var(--accent); animation:mic-pulse 1.4s ease-in-out infinite; }
 .call-transcript { margin:0; min-height:40px; max-width:300px; text-align:center; font-size:13px; line-height:1.6; }
 .call-transcript.reply { color:var(--ink); font-size:14px; animation:page-in .3s ease; }
+.call-resume { margin-top:4px; padding:9px 18px; border:1px solid var(--border); border-radius:99px; background:var(--surface-strong); color:var(--ink); font:500 11px/1 var(--sans); cursor:pointer; }
 .call-end { position:absolute; bottom:max(108px,calc(env(safe-area-inset-bottom) + 96px)); margin:0; }
 
 .instructions-input { width:100%; min-height:118px; resize:vertical; border:1px solid var(--border); border-radius:12px; padding:10px 11px; background:color-mix(in srgb,var(--ink) 4%,transparent); color:var(--ink); font:400 12px/1.6 var(--sans); }

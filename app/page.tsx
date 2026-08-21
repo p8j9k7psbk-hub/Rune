@@ -14,7 +14,9 @@ type ClaudeModel = { id: string; display_name: string; created_at?: string };
 type ChatAttachment = { id: number; name: string; kind: "image" | "text"; mediaType: string; data: string };
 type ToolTrace = { name: string; server?: string; input?: unknown; output?: unknown; status: "完成" | "失败" | "等待确认" };
 type TokenUsage = { input: number; output: number; total: number };
-type ChatMessage = { role: "user" | "assistant"; text: string; attachments?: ChatAttachment[]; voice?: boolean; reasoning?: string; toolTraces?: ToolTrace[]; usage?: TokenUsage; previousReplies?: ChatMessage[] };
+type ChatMessage = { role: "user" | "assistant"; text: string; attachments?: ChatAttachment[]; voice?: boolean; voiceText?: string; reasoning?: string; toolTraces?: ToolTrace[]; usage?: TokenUsage; previousReplies?: ChatMessage[]; revisions?: Array<{ savedAt: number; messages: ChatMessage[] }> };
+type VoiceCallTurn = { at: number; user: string; assistant: string };
+type VoiceCallRecord = { id: string; startedAt: number; endedAt: number; duration: number; turns: VoiceCallTurn[] };
 type RuneAction = { id: string; name: "add_todo" | "write_diary" | "set_home_message" | "create_reminder"; input: Record<string, string>; status: "pending" | "done" | "cancelled" };
 type RuneSurface = { mode: "call" | "alarm" | "reminder"; title: string; content: string };
 type Profile = {
@@ -157,7 +159,14 @@ async function startMcpOAuth(server: McpServer) {
 type StoredConversation = { id: number; title: string; updatedAt: number; messages: ChatMessage[] };
 
 const CHAT_HISTORY_KEY = "rune-chat-history";
+const CALL_HISTORY_KEY = "rune-call-history";
 const MAX_CONVERSATIONS = 200;
+
+function formatDuration(seconds: number) {
+  const safe = Math.max(0, Math.floor(seconds));
+  const minutes = Math.floor(safe / 60);
+  return `${String(minutes).padStart(2, "0")}:${String(safe % 60).padStart(2, "0")}`;
+}
 
 // 附件里的图片是 base64，一张手机照片就有几 MB，而 localStorage 配额通常只有 5MB。
 // 所以不预先剥离，而是照常存；写不下时由 persistConversations 淘汰最旧的对话，
@@ -266,6 +275,25 @@ function daysTogether(date: string) {
 
 type VoiceClip = { url: string; duration: number };
 const VOICE_MARK = /^\s*\[\[voice\]\]\s*/i;
+const VOICE_BLOCK = /\[\[voice\]\]([\s\S]*?)\[\[\/voice\]\]/gi;
+const MESSAGE_SPLIT = /\s*\[\[(?:split|message)\]\]\s*/i;
+
+function parseAssistantReply(reply: string): Array<{ text: string; voiceText?: string }> {
+  const parts = reply.split(MESSAGE_SPLIT).map((part) => part.trim()).filter(Boolean);
+  return (parts.length ? parts : [reply]).map((part) => {
+    const voiceParts: string[] = [];
+    const text = part.replace(VOICE_BLOCK, (_match, voice: string) => {
+      if (voice.trim()) voiceParts.push(voice.trim());
+      return "";
+    }).trim();
+    if (voiceParts.length) return { text, voiceText: voiceParts.join("\n") };
+    if (VOICE_MARK.test(part)) {
+      const spoken = part.replace(VOICE_MARK, "").trim();
+      return { text: "", voiceText: spoken };
+    }
+    return { text: part };
+  }).filter((part) => part.text || part.voiceText);
+}
 
 type VoiceConfig = {
   endpoint: string;
@@ -456,6 +484,10 @@ async function ensureRuneDevice() {
 function decodeBase64Url(value: string) {
   const padded = `${value.replaceAll("-", "+").replaceAll("_", "/")}${"=".repeat((4 - value.length % 4) % 4)}`;
   return Uint8Array.from(atob(padded), (character) => character.charCodeAt(0));
+}
+
+function equalBytes(left: Uint8Array, right: Uint8Array) {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
 const initialTodos: Todo[] = [];
@@ -816,11 +848,16 @@ function ChatView({
   const [callActive, setCallActive] = useState(false);
   const [callStage, setCallStage] = useState<"idle" | "listening" | "thinking" | "speaking">("idle");
   const [callReply, setCallReply] = useState("");
+  const [callDuration, setCallDuration] = useState(0);
+  const [callRecords, setCallRecords] = useState<VoiceCallRecord[]>([]);
   const orbRef = useRef<HTMLDivElement>(null);
   const waveRef = useRef<HTMLDivElement>(null);
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const callActiveRef = useRef(false);
+  const callStartedAtRef = useRef(0);
+  const callTurnsRef = useRef<VoiceCallTurn[]>([]);
+  const callFinalizedRef = useRef(true);
   const mcpSessionsRef = useRef<Record<number, { sessionId?: string; tools: McpTool[] }>>({});
   const voiceReady = Boolean(minimaxKey && voiceConfig.voiceId);
 
@@ -857,6 +894,23 @@ function ChatView({
     setCallStage("speaking");
     setCallReply("我在。慢慢说，我会听着。 ");
   }, []);
+
+  useEffect(() => {
+    try {
+      const stored = JSON.parse(localStorage.getItem(CALL_HISTORY_KEY) || "[]") as VoiceCallRecord[];
+      if (Array.isArray(stored)) setCallRecords(stored);
+    } catch {
+      setCallRecords([]);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!callActive || !callStartedAtRef.current) return;
+    const update = () => setCallDuration(Math.floor((Date.now() - callStartedAtRef.current) / 1000));
+    update();
+    const timer = globalThis.setInterval(update, 1000);
+    return () => globalThis.clearInterval(timer);
+  }, [callActive]);
 
   const stopAudio = () => {
     if (audioRef.current) {
@@ -994,6 +1048,26 @@ function ChatView({
     }
   };
 
+  const finalizeCallRecord = () => {
+    if (callFinalizedRef.current || !callStartedAtRef.current) return;
+    callFinalizedRef.current = true;
+    const endedAt = Date.now();
+    const record: VoiceCallRecord = {
+      id: `${callStartedAtRef.current}`,
+      startedAt: callStartedAtRef.current,
+      endedAt,
+      duration: Math.max(1, Math.floor((endedAt - callStartedAtRef.current) / 1000)),
+      turns: [...callTurnsRef.current],
+    };
+    setCallRecords((current) => {
+      const next = [record, ...current].slice(0, 80);
+      localStorage.setItem(CALL_HISTORY_KEY, JSON.stringify(next));
+      return next;
+    });
+    callStartedAtRef.current = 0;
+    callTurnsRef.current = [];
+  };
+
   // 通话模式：听 → 发 → 朗读 → 再听，循环到挂断
   const runCall = async () => {
     let retryCount = 0;
@@ -1016,6 +1090,7 @@ function ChatView({
         if (!callActiveRef.current) break;
 
         if (reply) {
+          callTurnsRef.current.push({ at: Date.now(), user: said, assistant: reply });
           setCallReply(reply);      // 文字和语音同时出来
           setCallStage("speaking");
           await speak(reply, null);
@@ -1036,14 +1111,19 @@ function ChatView({
     setCallStage("idle");
     setCallActive(false);
     callActiveRef.current = false;
+    finalizeCallRecord();
   };
 
   const startCall = () => {
     if (!voiceReady) { setChatNotice("先去 Settings → 语音 填好 MiniMax 的 Key 和 Voice ID。"); return; }
     setCallActive(true);
     callActiveRef.current = true;
+    callStartedAtRef.current = Date.now();
+    callTurnsRef.current = [];
+    callFinalizedRef.current = false;
+    setCallDuration(0);
     setShowHistory(false);
-    runCall();
+    void runCall();
   };
 
   const endCall = () => {
@@ -1055,6 +1135,7 @@ function ChatView({
     recognitionRef.current = null;
     stopAudio();
     setLiveTranscript("");
+    finalizeCallRecord();
   };
 
   // 每帧逐根算高度。CSS 动画做不到这个效果：给每根线加固定相位差，
@@ -1172,6 +1253,14 @@ function ChatView({
     }
   };
 
+  const deleteCallRecord = (id: string) => {
+    setCallRecords((current) => {
+      const next = current.filter((record) => record.id !== id);
+      localStorage.setItem(CALL_HISTORY_KEY, JSON.stringify(next));
+      return next;
+    });
+  };
+
   const addAttachments = async (files?: FileList | null) => {
     if (!files?.length) return;
     const accepted: ChatAttachment[] = [];
@@ -1234,7 +1323,7 @@ function ChatView({
         const response = await fetch(`${runeApiBase()}/api/reminders`, {
           method: "POST",
           headers: { "content-type": "application/json", "x-rune-device": deviceId, "x-rune-token": deviceToken },
-          body: JSON.stringify({ title: action.input.title || "提醒", content: action.input.content || action.input.title || "你有一个新的提醒。", scheduledAt: action.input.datetime, mode: action.input.mode || "reminder", appUrl: location.origin, runeName: profile.name || "Rune", runeAvatar: profile.avatar || "", barkServer: localStorage.getItem("rune-bark-server") || "", barkKey: localStorage.getItem("rune-bark-key") || "" }),
+          body: JSON.stringify({ title: action.input.title || "提醒", content: action.input.content || action.input.title || "你有一个新的提醒。", scheduledAt: action.input.datetime, mode: action.input.mode || "reminder", appUrl: location.origin, runeName: profile.name || "Rune", runeAvatar: profile.avatar || "" }),
         });
         if (!response.ok) throw new Error(`提醒已保存在本机，但后台同步失败（HTTP ${response.status}）。`);
       }
@@ -1249,13 +1338,20 @@ function ChatView({
     if ((!text && !attachments.length) || sending) return "";
     const editedMessage = editIndex === undefined ? undefined : messagesRef.current[editIndex];
     const outgoingAttachments = editedMessage?.attachments || attachments;
-    const oldReply = editIndex === undefined || messagesRef.current[editIndex + 1]?.role !== "assistant" ? undefined : messagesRef.current[editIndex + 1];
-    const previousReplies = oldReply
-      ? [...(oldReply.previousReplies || []), { ...oldReply, previousReplies: undefined }]
-      : [];
+    const editedBranch = editIndex === undefined ? [] : messagesRef.current.slice(editIndex).map((message) => ({ ...message, revisions: undefined }));
+    const nextUserOffset = editedBranch.findIndex((message, index) => index > 0 && message.role === "user");
+    const oldTurnReplies = editedBranch.slice(1, nextUserOffset === -1 ? editedBranch.length : nextUserOffset).filter((message) => message.role === "assistant");
+    const previousReplies = oldTurnReplies.flatMap((reply) => [...(reply.previousReplies || []), { ...reply, previousReplies: undefined }]);
+    const editedUser: ChatMessage | undefined = editedMessage ? {
+      ...editedMessage,
+      role: "user",
+      text,
+      attachments: outgoingAttachments,
+      revisions: [...(editedMessage.revisions || []), { savedAt: Date.now(), messages: editedBranch }],
+    } : undefined;
     const nextMessages: ChatMessage[] = editIndex === undefined
       ? [...messagesRef.current, { role: "user", text, attachments: outgoingAttachments }]
-      : [...messagesRef.current.slice(0, editIndex), { ...editedMessage, role: "user", text, attachments: outgoingAttachments }];
+      : [...messagesRef.current.slice(0, editIndex), editedUser!];
     messagesRef.current = nextMessages;
     setMessages(nextMessages);
     setInput("");
@@ -1264,12 +1360,13 @@ function ChatView({
     setEditDraft("");
     if (editIndex !== undefined) {
       setActions([]);
-      const replyIndex = nextMessages.length;
-      const oldClip = clipsRef.current[replyIndex];
-      if (oldClip?.url.startsWith("blob:")) URL.revokeObjectURL(oldClip.url);
-      delete clipsRef.current[replyIndex];
+      for (const key of Object.keys(clipsRef.current).map(Number).filter((key) => key >= nextMessages.length)) {
+        const oldClip = clipsRef.current[key];
+        if (oldClip?.url.startsWith("blob:")) URL.revokeObjectURL(oldClip.url);
+        delete clipsRef.current[key];
+      }
       setClips({ ...clipsRef.current });
-      setShownText((current) => { const next = { ...current }; delete next[replyIndex]; return next; });
+      setShownText((current) => Object.fromEntries(Object.entries(current).filter(([key]) => Number(key) < nextMessages.length)));
     }
     if (!claudeKey || !claudeModel) {
       const hint = "先去 Settings 连接 AI API 并选择模型，我就可以真正回复你了。";
@@ -1304,11 +1401,12 @@ function ChatView({
         }
       }
       const systemPrompt = `${profile.instructions || defaultProfile.instructions}\n\n${nowContext()}\n需要修改 ${profile.name || "Rune"} 数据或创建提醒时必须调用对应工具，不要假装已经完成。
-${voiceReady ? "当这句话情绪比较浓、更适合说出来而不是打字时（安慰、想念、认真的鼓励、道歉之类），在回复最前面加上 [[voice]] 标记，它会以语音消息的形式发过去。日常闲聊、查信息、确认事项不要加。一次对话里别频繁使用。" : ""}`;
+你可以把一次回复拆成多个自然的聊天气泡，在气泡之间单独写 [[split]]。只在确实适合分开发送时使用，避免把每句话都切碎。
+${voiceReady ? "你可以同时发送文字和语音：正常文字直接写；要额外生成语音条的内容放在 [[voice]] 与 [[/voice]] 之间。文字和语音内容可以不同。只发语音时可以只写语音区块。情绪浓、安慰、想念、鼓励或道歉时再使用，不要每条都发语音。" : "不要输出任何 [[voice]] 标记。"}`;
       const endpoint = protocol === "anthropic" ? `${apiBase}/messages` : `${apiBase}/chat/completions`;
       const openAiMessages = [
         { role: "system", content: systemPrompt },
-        ...nextMessages.map((message) => ({ role: message.role, content: message.text || "（含附件的消息）" })),
+        ...nextMessages.map((message) => ({ role: message.role, content: [message.text, message.voiceText].filter(Boolean).join("\n") || "（含附件的消息）" })),
       ];
       const openAiTools = [
         ...runeTools.map((tool) => ({ type: "function", function: { name: tool.name, description: tool.description, parameters: tool.input_schema } })),
@@ -1330,7 +1428,7 @@ ${voiceReady ? "当这句话情绪比较浓、更适合说出来而不是打字�
           system: systemPrompt,
           messages: nextMessages.map((message) => ({
             role: message.role,
-            content: message.role === "assistant" ? message.text : [
+            content: message.role === "assistant" ? [message.text, message.voiceText].filter(Boolean).join("\n") : [
               // 历史记录在存储吃紧时可能把附件内容清空，只剩文件名。
               // 这种情况下不能把空数据发给 API（会直接报错），改成一句说明。
               ...(message.attachments || []).map((attachment) => !attachment.data
@@ -1414,21 +1512,38 @@ ${voiceReady ? "当这句话情绪比较浓、更适合说出来而不是打字�
             return { id: call.id, name: call.function.name, input, status: "pending" as const };
           });
       for (const action of proposed) toolTraces.push({ name: action.name, server: "Rune", input: action.input, status: "等待确认" });
-      // Rune 用 [[voice]] 标记"这句想说出来"，剥掉标记并记成语音消息
-      const wantsVoice = VOICE_MARK.test(reply);
-      const spoken = reply.replace(VOICE_MARK, "").trim();
-      const finalReply = spoken || reply || (proposed.length ? "我准备执行下面的操作，请你确认。" : "我在。");
+      const rawReply = reply || (proposed.length ? "我准备执行下面的操作，请你确认。" : "我在。");
+      const parsedParts = parseAssistantReply(rawReply).map((part) => voiceReady
+        ? part
+        : { text: [part.text, part.voiceText].filter(Boolean).join("\n") });
+      const assistantMessages: ChatMessage[] = parsedParts.map((part, index) => ({
+        role: "assistant",
+        text: part.text,
+        voiceText: part.voiceText,
+        voice: !part.text && Boolean(part.voiceText),
+        ...(index === 0 && previousReplies.length ? { previousReplies } : {}),
+        ...(index === parsedParts.length - 1 ? {
+          reasoning: reasoning || undefined,
+          toolTraces: toolTraces.length ? toolTraces : undefined,
+          usage: usage.total ? usage : undefined,
+        } : {}),
+      }));
+      const finalReply = assistantMessages.map((message) => [message.text, message.voiceText].filter(Boolean).join("\n")).filter(Boolean).join("\n");
       const replyIndex = nextMessages.length;
-      messagesRef.current = [...nextMessages, { role: "assistant", text: finalReply, voice: wantsVoice && voiceReady, reasoning: reasoning || undefined, toolTraces: toolTraces.length ? toolTraces : undefined, usage: usage.total ? usage : undefined, previousReplies: previousReplies.length ? previousReplies : undefined }];
+      messagesRef.current = [...nextMessages, ...assistantMessages];
       setMessages(messagesRef.current);
       // 首页那张卡片跟着对话走：每次回复都同步过去，附带时间戳。
       if (finalReply) setHomeMessage(finalReply);
       if (proposed.length) setActions((items) => [...items, ...proposed]);
       // 语音消息先合成好，点开就能响；通话模式由 runCall 自己念，这里不重复
-      if (wantsVoice && voiceReady && !callActiveRef.current) {
-        prepareClip(replyIndex, finalReply)
-          .then((clip) => { if (voiceConfig.autoPlay && clip) playClip(replyIndex, clip.url); })
-          .catch(() => undefined);
+      if (voiceReady && !callActiveRef.current) {
+        assistantMessages.forEach((message, offset) => {
+          if (!message.voiceText) return;
+          const messageIndex = replyIndex + offset;
+          prepareClip(messageIndex, message.voiceText)
+            .then((clip) => { if (voiceConfig.autoPlay && clip && offset === 0) playClip(messageIndex, clip.url); })
+            .catch(() => undefined);
+        });
       }
       return finalReply;
     } catch (error) {
@@ -1442,12 +1557,12 @@ ${voiceReady ? "当这句话情绪比较浓、更适合说出来而不是打字�
   };
 
   const callLabel = { idle: "接通中…", listening: "在听你说", thinking: "正在想", speaking: `${profile.name || "Rune"} 在说` }[callStage];
-  const lastEditableUserIndex = messages.reduce((latest, message, index) => message.role === "user" ? index : latest, -1);
 
   return (
     <main className="page claude-chat-page">
       {callActive && (
         <div className="call-overlay" role="dialog" aria-label="语音通话">
+          <div className="call-topline"><span>语音通话</span><time>{formatDuration(callDuration)}</time></div>
           <div className={`call-orb ${callStage}`} ref={orbRef}>
             <div className="call-halo" aria-hidden="true" />
             <div className="call-wave" aria-hidden="true" ref={waveRef}>
@@ -1460,6 +1575,7 @@ ${voiceReady ? "当这句话情绪比较浓、更适合说出来而不是打字�
             </div>
           </div>
           <strong>{profile.name || "Rune"}</strong>
+          <small className="call-turn-count">{callTurnsRef.current.length ? `${callTurnsRef.current.length} 轮对话` : "已接通"}</small>
           <p className={`call-stage ${callStage}`}>{callLabel}</p>
           {/* 说话时把回复文字一起显示出来，听的时候显示实时字幕 */}
           <p className={callStage === "speaking" ? "call-transcript reply" : "call-transcript"}>
@@ -1499,6 +1615,15 @@ ${voiceReady ? "当这句话情绪比较浓、更适合说出来而不是打字�
               <button className="history-delete" aria-label={`删除 ${conversation.title}`} onClick={() => deleteConversation(conversation.id)}>×</button>
             </div>
           ))}
+          {!!callRecords.length && <div className="call-record-list">
+            <p className="history-section-label">语音通话记录</p>
+            {callRecords.map((record) => (
+              <details className="call-record" key={record.id}>
+                <summary><span><strong>{profile.name || "Rune"}</strong><small>{new Date(record.startedAt).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })} · {formatDuration(record.duration)} · {record.turns.length} 轮</small></span><button aria-label="删除通话记录" onClick={(event) => { event.preventDefault(); deleteCallRecord(record.id); }}>×</button></summary>
+                <div>{record.turns.length ? record.turns.map((turn, turnIndex) => <section key={turn.at}><p><b>{profile.userName || "user"}</b>{turn.user}</p><p><b>{profile.name || "Rune"}</b>{turn.assistant}</p></section>) : <p className="history-empty">这次通话没有识别到内容。</p>}</div>
+              </details>
+            ))}
+          </div>}
         </section>
       )}
 
@@ -1530,11 +1655,13 @@ ${voiceReady ? "当这句话情绪比较浓、更适合说出来而不是打字�
                     <button disabled={!editDraft.trim() || sending} onClick={() => sendMessage(editDraft, index)}>保存并重新回复</button>
                   </div>
                 </div>
-              ) : message.voice ? (
-                <div className="voice-message">
+              ) : (
+                <>
+                {!message.voice && message.text && <p>{message.text}</p>}
+                {(message.voiceText || message.voice) && <div className="voice-message">
                   <button
                     className={speakingIndex === index ? "voice-bubble playing" : "voice-bubble"}
-                    onClick={() => toggleVoiceMessage(index, message.text)}
+                    onClick={() => toggleVoiceMessage(index, message.voiceText || message.text)}
                     aria-label={speakingIndex === index ? "停止播放" : "播放语音"}
                   >
                     <span className="voice-icon">{preparingIndex === index ? "…" : speakingIndex === index ? "◼" : "▶"}</span>
@@ -1546,13 +1673,25 @@ ${voiceReady ? "当这句话情绪比较浓、更适合说出来而不是打字�
                   <button className="voice-to-text" onClick={() => setShownText((m) => ({ ...m, [index]: !m[index] }))}>
                     {shownText[index] ? "收起文字" : "转文字"}
                   </button>
-                  {shownText[index] && <p className="voice-transcript">{message.text}</p>}
-                </div>
-              ) : (
-                message.text && <p>{message.text}</p>
+                  {shownText[index] && <p className="voice-transcript">{message.voiceText || message.text}</p>}
+                </div>}
+                </>
               )}
-              {message.role === "user" && index === lastEditableUserIndex && editingIndex !== index && !sending && (
+              {message.role === "user" && editingIndex !== index && !sending && (
                 <button className="message-edit-button" onClick={() => { setEditingIndex(index); setEditDraft(message.text); }}>编辑</button>
+              )}
+              {message.role === "user" && !!message.revisions?.length && (
+                <details className="message-revisions">
+                  <summary>编辑前记录 · {message.revisions.length}</summary>
+                  {message.revisions.map((revision, revisionIndex) => (
+                    <section key={revision.savedAt}>
+                      <small>版本 {revisionIndex + 1} · {new Date(revision.savedAt).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}</small>
+                      {revision.messages.map((saved, savedIndex) => (
+                        <p className={saved.role} key={savedIndex}><b>{saved.role === "user" ? profile.userName || "user" : profile.name || "Rune"}</b>{saved.text || saved.voiceText}</p>
+                      ))}
+                    </section>
+                  ))}
+                </details>
               )}
               {message.role === "assistant" && !!message.previousReplies?.length && (
                 <details className="previous-replies">
@@ -1777,14 +1916,6 @@ function SettingsView({
   const [healthMessage, setHealthMessage] = useState("");
   const [notificationStatus, setNotificationStatus] = useState("");
   const [enablingNotifications, setEnablingNotifications] = useState(false);
-  const [barkServer, setBarkServer] = useState("https://api.day.app");
-  const [barkKey, setBarkKey] = useState("");
-
-  useEffect(() => {
-    if (typeof globalThis.document === "undefined") return;
-    setBarkServer(localStorage.getItem("rune-bark-server") || "https://api.day.app");
-    setBarkKey(localStorage.getItem("rune-bark-key") || "");
-  }, []);
 
   const updateProfile = (patch: Partial<Profile>) => setProfile({ ...profile, ...patch });
 
@@ -1952,16 +2083,20 @@ function SettingsView({
       await syncNotificationProfile(profile);
       let keyResponse: Response;
       try {
-        keyResponse = await fetch(`${runeApiBase()}/api/push/key`);
+        keyResponse = await fetch(`${runeApiBase()}/api/push/key`, { headers: { "x-rune-device": deviceId, "x-rune-token": deviceToken } });
       } catch {
         throw new Error("通知服务目前无法连接，请稍后重试。");
       }
       const keyData = await readJson(keyResponse, "读取推送密钥");
       if (!keyData.publicKey) throw new Error("读取推送密钥失败：后端还没有配置 VAPID 公钥。");
-      const subscription = await registration.pushManager.subscribe({
-        userVisibleOnly: true,
-        applicationServerKey: decodeBase64Url(String(keyData.publicKey)),
-      });
+      const applicationServerKey = decodeBase64Url(String(keyData.publicKey));
+      let subscription = await registration.pushManager.getSubscription();
+      const subscribedKey = subscription?.options.applicationServerKey;
+      if (subscription && subscribedKey && !equalBytes(new Uint8Array(subscribedKey), applicationServerKey)) {
+        await subscription.unsubscribe();
+        subscription = null;
+      }
+      subscription ||= await registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey });
       const subscriptionResponse = await fetch(`${runeApiBase()}/api/push/subscriptions`, {
         method: "POST",
         headers: { "content-type": "application/json", "x-rune-device": deviceId, "x-rune-token": deviceToken },
@@ -1976,17 +2111,16 @@ function SettingsView({
     }
   };
 
-  const testBark = async () => {
-    if (!barkKey.trim()) { setNotificationStatus("请先填写 Bark Device Key。"); return; }
+  const testWebPush = async () => {
     setEnablingNotifications(true);
     setNotificationStatus("");
     try {
       const { deviceId, deviceToken } = await ensureRuneDevice();
-      const response = await fetch(`${runeApiBase()}/api/bark/test`, { method: "POST", headers: { "content-type": "application/json", "x-rune-device": deviceId, "x-rune-token": deviceToken }, body: JSON.stringify({ barkServer: barkServer.trim() || "https://api.day.app", barkKey: barkKey.trim(), runeName: profile.name || "Rune", runeAvatar: profile.avatar || "", title: "Bark 测试", content: "Bark 已经连接成功。" }) });
-      await readJson(response, "Bark 测试");
-      setNotificationStatus("Bark 测试通知已经发送。");
+      const response = await fetch(`${runeApiBase()}/api/push/test`, { method: "POST", headers: { "content-type": "application/json", "x-rune-device": deviceId, "x-rune-token": deviceToken }, body: JSON.stringify({ appUrl: location.origin, runeName: profile.name || "Rune", runeAvatar: profile.avatar || "", title: "Rune 通知测试", content: "Web Push 已经连接成功。" }) });
+      await readJson(response, "Web Push 测试");
+      setNotificationStatus("Web Push 测试通知已经发送。");
     } catch (error) {
-      setNotificationStatus(error instanceof Error ? error.message : "Bark 测试失败。");
+      setNotificationStatus(error instanceof Error ? error.message : "Web Push 测试失败。请先开启通知。");
     } finally { setEnablingNotifications(false); }
   };
 
@@ -2174,19 +2308,12 @@ function SettingsView({
         <div className="settings-heading"><p className="eyebrow">Reminders</p><h2>系统通知</h2></div>
         <div className="connection-card">
           <span className="connection-icon notification-icon">◉</span>
-          <span><strong>Rune 定时提醒</strong><small>在锁屏、通知中心和 Apple Watch 显示</small></span>
+          <span><strong>Rune Web Push</strong><small>从主屏幕 Rune 发到锁屏、通知中心和 Apple Watch</small></span>
         </div>
-        <label className="field-label">Bark 服务器
-          <input type="url" inputMode="url" value={barkServer} onChange={(event) => { setBarkServer(event.target.value); localStorage.setItem("rune-bark-server", event.target.value.trim().replace(/\/+$/, "")); }} placeholder="https://api.day.app" autoComplete="off" />
-        </label>
-        <label className="field-label">Bark Device Key
-          <input type="password" value={barkKey} onChange={(event) => { setBarkKey(event.target.value); localStorage.setItem("rune-bark-key", event.target.value.trim()); }} placeholder="Bark App 中显示的设备 Key" autoComplete="off" />
-        </label>
-        <button className="solid-action" onClick={testBark} disabled={enablingNotifications || !barkKey.trim()}>
-          {enablingNotifications ? "正在发送…" : "测试 Bark 通知"}
-        </button>
-        {notificationStatus && <p className={notificationStatus.startsWith("Bark 测试通知") ? "success-note" : "error-note"}>{notificationStatus}</p>}
-        <p className="setting-note">填写 Bark 后，Rune 创建提醒时会把 LLM 编辑的标题和正文交给后端，到点后通过 Bark 发送；未填写时使用系统 Web Push。通知发送者名称与头像跟随 Rune 设置。Bark Key 只保存在本机，并在创建提醒时发给你配置的提醒后端。</p>
+        <button className="solid-action" onClick={enableNotifications} disabled={enablingNotifications}>{enablingNotifications ? "正在连接…" : "开启 Web Push"}</button>
+        <button className="outline-action" onClick={testWebPush} disabled={enablingNotifications}>{enablingNotifications ? "请稍候…" : "发送测试通知"}</button>
+        {notificationStatus && <p className={/已经开启|已经发送/.test(notificationStatus) ? "success-note" : "error-note"}>{notificationStatus}</p>}
+        <p className="setting-note">请先把 Rune 添加到 iPhone 主屏幕，再从主屏幕打开 Rune 并点击“开启 Web Push”。之后提醒由 Rune 的 Cloudflare Worker 定时发送；点击通知会回到主屏幕 Rune。通知名称和头像跟随 Rune 设置。</p>
       </section>
         </div>
       </details>

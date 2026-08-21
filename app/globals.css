@@ -232,6 +232,18 @@ h1 { font-family:var(--serif); font-weight:500; letter-spacing:-.035em; }
 .history-open strong { font-size:13px; font-weight:550; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:100%; }
 .history-open small { color:var(--muted); font-size:10px; }
 .history-delete { flex:none; width:30px; height:30px; margin-right:8px; border:0; border-radius:50%; background:transparent; color:var(--muted); font-size:16px; cursor:pointer; }
+.history-section-label { margin:0; padding:10px 13px 6px; border-top:1px solid var(--border); color:var(--muted); font-size:9px; letter-spacing:.04em; }
+.call-record + .call-record { border-top:1px solid var(--border); }
+.call-record > summary { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:10px 9px 10px 13px; cursor:pointer; list-style:none; }
+.call-record > summary::-webkit-details-marker { display:none; }
+.call-record > summary span { display:flex; min-width:0; flex-direction:column; gap:2px; }
+.call-record > summary strong { font-size:12px; font-weight:550; }
+.call-record > summary small { color:var(--muted); font-size:9px; }
+.call-record > summary button { width:28px; height:28px; flex:none; border:0; border-radius:50%; background:transparent; color:var(--muted); font-size:15px; cursor:pointer; }
+.call-record > div { padding:0 13px 10px; }
+.call-record section { padding:8px 0; border-top:1px solid color-mix(in srgb,var(--border) 70%,transparent); }
+.call-record section p { display:grid; grid-template-columns:42px 1fr; gap:7px; margin:4px 0; font-size:10px; line-height:1.55; white-space:pre-wrap; }
+.call-record section b { overflow:hidden; color:var(--muted); font-size:8px; font-weight:500; text-overflow:ellipsis; white-space:nowrap; }
 .chat-notice { position:fixed; z-index:30; top:54px; left:50%; transform:translateX(-50%); padding:7px 11px; border:1px solid var(--border); border-radius:10px; background:rgba(255,254,250,.94); color:var(--ink); box-shadow:0 6px 18px rgba(35,31,27,.1); font-size:10px; white-space:nowrap; }
 .chat-model-select { flex:1; min-width:0; max-width:170px; height:26px; padding:0 22px 0 8px; border:0; border-radius:8px; background:rgba(118,118,128,.08); color:var(--muted); font-size:9px; outline:none; }
 .claude-message-stream { flex:1; min-height:0; overflow-x:hidden; overflow-y:auto; overscroll-behavior:contain; -webkit-overflow-scrolling:touch; display:flex; flex-direction:column; gap:18px; padding:18px 0 112px; scrollbar-width:none; }
@@ -270,6 +282,12 @@ h1 { font-family:var(--serif); font-weight:500; letter-spacing:-.035em; }
 .previous-replies section small { display:block; margin-bottom:4px; color:var(--muted); font-size:8px; }
 .previous-replies section p { color:#6f6961; font-size:10px; line-height:1.6; white-space:pre-wrap; }
 .previous-replies section em { display:block; margin-top:4px; color:var(--muted); font-size:7.5px; font-style:normal; opacity:.65; }
+.message-revisions { width:min(330px,calc(100vw - 100px)); margin-top:7px; border:1px solid rgba(60,55,49,.1); border-radius:10px; background:rgba(255,255,255,.45); white-space:normal; }
+.message-revisions summary { padding:6px 8px; color:var(--muted); cursor:pointer; font-size:8.5px; }
+.message-revisions section { padding:8px; border-top:1px solid rgba(60,55,49,.08); }
+.message-revisions section > small { display:block; margin-bottom:6px; color:var(--muted); font-size:8px; }
+.message-revisions section p { display:grid; grid-template-columns:42px 1fr; gap:6px; margin:5px 0; color:#6f6961; font-size:9px; line-height:1.55; white-space:pre-wrap; }
+.message-revisions section p b { overflow:hidden; color:var(--muted); font-size:8px; font-weight:500; text-overflow:ellipsis; white-space:nowrap; }
 .sent-attachments { display:flex; flex-wrap:wrap; gap:5px; margin-bottom:6px; }
 .sent-attachments span { max-width:220px; overflow:hidden; padding:4px 7px; border-radius:7px; background:rgba(255,255,255,.55); font-size:9px; text-overflow:ellipsis; white-space:nowrap; }
 .action-confirm-card { margin-left:32px; padding:13px; border:1px solid rgba(217,119,87,.28); border-radius:15px; background:rgba(255,252,248,.9); box-shadow:0 7px 22px rgba(35,31,27,.06); }
@@ -452,6 +470,7 @@ html[data-keyboard-open] .claude-composer { bottom:0; border-radius:17px 17px 0 
 @keyframes mic-pulse { 0%,100% { opacity:1; } 50% { opacity:.55; } }
 /* 语音消息气泡 */
 .voice-message { display:flex; flex-direction:column; align-items:flex-start; gap:5px; }
+.claude-message.assistant p + .voice-message { margin-top:7px; }
 .voice-bubble { display:flex; align-items:center; gap:9px; min-width:132px; padding:10px 14px; border:1px solid var(--border); border-radius:16px; background:var(--surface-strong); color:var(--ink); cursor:pointer; }
 .voice-bubble.playing { background:var(--accent); border-color:transparent; color:var(--accent-contrast); }
 .voice-icon { font-size:11px; width:12px; }
@@ -468,6 +487,8 @@ html[data-keyboard-open] .claude-composer { bottom:0; border-radius:17px 17px 0 
 
 .call-overlay { position:fixed; inset:0; z-index:60; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:14px; padding:32px;
   background:color-mix(in srgb,var(--bg) 92%,#000); color:var(--ink); animation:page-in .3s ease; }
+.call-topline { position:absolute; top:max(24px,env(safe-area-inset-top)); left:50%; width:min(360px,calc(100% - 40px)); transform:translateX(-50%); display:flex; align-items:center; justify-content:space-between; color:var(--muted); font-size:11px; letter-spacing:.04em; }
+.call-topline time { color:var(--ink); font-variant-numeric:tabular-nums; letter-spacing:.08em; }
 /* 环形音波：180 根细线密排成一圈。
    外层 i 只做定位和旋转（不动），内层 b 的 scaleY 由 JS 每帧计算。
    不用 CSS 动画是因为"每根固定相位差"只能得到形状不变、绕圈平移的波，
@@ -505,6 +526,7 @@ html[data-keyboard-open] .claude-composer { bottom:0; border-radius:17px 17px 0 
 .call-avatar img { width:100%; height:100%; object-fit:cover; }
 .call-avatar span { font-family:var(--serif); font-size:40px; }
 .call-overlay strong { font-family:var(--serif); font-size:22px; font-weight:500; }
+.call-turn-count { margin-top:-9px; color:var(--muted); font-size:9px; }
 .call-stage { margin:0; color:var(--muted); font-size:12px; }
 .call-stage.listening { color:var(--accent); }
 .call-stage.speaking { color:var(--accent); animation:mic-pulse 1.4s ease-in-out infinite; }

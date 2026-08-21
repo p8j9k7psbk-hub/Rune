@@ -71,7 +71,13 @@ test("keeps required AI, voice, and mobile behavior", async () => {
   assert.match(page, /authorization_token/);
   assert.match(page, /startMcpOAuth/);
   assert.match(page, /无 OAuth/);
-  assert.match(page, /Bark Device Key/);
+  assert.match(page, /Rune Web Push/);
+  assert.match(page, /发送测试通知/);
+  assert.doesNotMatch(page, /Bark Device Key/);
+  assert.match(page, /语音通话记录/);
+  assert.match(page, /编辑前记录/);
+  assert.match(page, /\[\[split\]\]/);
+  assert.match(page, /\[\[voice\]\]/);
   assert.match(page, /麦克风权限/);
   assert.match(page, /MiniMax 可否调用/);
   assert.match(page, /当前打开界面/);

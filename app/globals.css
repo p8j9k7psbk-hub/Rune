@@ -35,6 +35,7 @@ button { color: inherit; }
 .theme-sage { --bg:#71866d; --bg-rgb:113,134,109; --ink:#f7f4eb; --muted:#d7dfd2; --surface:rgba(28,45,30,.36); --surface-strong:rgba(27,39,27,.62); --border:rgba(255,255,255,.15); --accent:#c1e2b8; --accent-contrast:#1e351f; --tint:#9bb398; --diary-tint:var(--accent); --diary-tint-text:color-mix(in srgb,var(--accent) 35%,var(--ink) 65%); --diary-tint-contrast:var(--accent-contrast); background:#334a36; }
 .theme-ink { --bg:#242622; --bg-rgb:36,38,34; --ink:#f1f0e9; --muted:#a6a99f; --surface:rgba(255,255,255,.07); --surface-strong:rgba(255,255,255,.1); --border:rgba(255,255,255,.09); --accent:#c7d7bd; --accent-contrast:#172016; --tint:#53614f; --diary-tint:#efeee8; --diary-tint-text:#efeee8; --diary-tint-contrast:#242622; background:#131512; }
 .theme-claude { --bg:#f1eadf; --bg-rgb:241,234,223; --ink:#2e2a25; --muted:#7d7166; --surface:rgba(255,250,242,.72); --surface-strong:rgba(255,249,239,.9); --border:rgba(82,61,44,.11); --accent:#d97757; --accent-contrast:#fffaf4; --tint:#e5ae91; --diary-tint:var(--accent); --diary-tint-text:color-mix(in srgb,var(--accent) 35%,var(--ink) 65%); --diary-tint-contrast:var(--accent-contrast); background:#c48a6e; }
+.theme-custom { --bg:var(--custom-bg); --ink:var(--custom-ink); --muted:color-mix(in srgb,var(--custom-ink) 58%,var(--custom-bg)); --surface:color-mix(in srgb,#fff 64%,var(--custom-bg)); --surface-strong:color-mix(in srgb,#fff 82%,var(--custom-bg)); --border:color-mix(in srgb,var(--custom-ink) 11%,transparent); --accent:var(--custom-accent); --accent-contrast:var(--custom-accent-contrast); --tint:color-mix(in srgb,var(--custom-accent) 55%,var(--custom-bg)); background:color-mix(in srgb,var(--custom-bg) 72%,var(--custom-accent)); }
 
 .ambient { position: fixed; border-radius: 999px; filter: blur(60px); opacity: .5; pointer-events: none; }
 .ambient.one { width: 330px; height: 330px; background: #ece5d4; left: calc(50% - 360px); top: -70px; }
@@ -432,12 +433,15 @@ html[data-keyboard-open] .claude-composer { bottom:0; border-radius:17px 17px 0 
 .settings-sheet h2 { font-family:var(--serif); margin:0; font-size:24px; font-weight:500; }
 .settings-sheet > p { color:#7b7b74; font-family:var(--serif); font-size:13px; }
 .close-sheet { border:0; background:transparent; font-size:12px; cursor:pointer; }
-.theme-options { display:grid; grid-template-columns:repeat(4,1fr); gap:8px; }
+.theme-options { display:grid; grid-template-columns:repeat(5,1fr); gap:7px; }
 .theme-option { border:1px solid #e2e1da; background:#fff; border-radius:15px; padding:10px 5px; display:flex; flex-direction:column; align-items:center; gap:6px; cursor:pointer; }
 .theme-option i { width:28px; height:28px; border-radius:50%; box-shadow:inset 0 0 0 1px rgba(0,0,0,.08); }
 .theme-option span { font-size:10px; }
 .theme-option b { height:10px; font-size:10px; }
 .theme-option.active { border-color:#6d7767; box-shadow:0 0 0 1px #6d7767; }
+.custom-theme-controls { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin-top:12px; }
+.custom-theme-controls label { display:flex; align-items:center; justify-content:space-between; gap:6px; padding:8px 9px; border:1px solid var(--border); border-radius:12px; color:var(--muted); font-size:10px; background:var(--surface-strong); }
+.custom-theme-controls input[type="color"] { width:25px; height:25px; padding:0; border:0; border-radius:50%; overflow:hidden; background:transparent; }
 .blur-control { margin-top:17px; display:flex; justify-content:space-between; align-items:center; font-family:var(--serif); font-size:12px; }
 .blur-control input { width:48%; accent-color:#6d7767; }
 /* Settings 分组：用原生 details/summary 折叠，省掉一份状态也自带无障碍语义。 */
@@ -450,9 +454,17 @@ html[data-keyboard-open] .claude-composer { bottom:0; border-radius:17px 17px 0 
 .settings-group > summary i { color:var(--muted); font-size:19px; font-style:normal; transition:transform .22s ease; }
 .settings-group[open] > summary i { transform:rotate(90deg); }
 .settings-group[open] > summary { border-bottom:1px solid var(--border); }
-.settings-group-body { padding:2px 13px 13px; }
-.settings-group-body .settings-section { margin-top:12px; border:0; border-radius:0; background:transparent; box-shadow:none; padding:0; }
-.settings-group-body .settings-section + .settings-section { padding-top:12px; border-top:1px solid var(--border); }
+.settings-group-body { padding:0; }
+.settings-subgroup + .settings-subgroup { border-top:1px solid var(--border); }
+.settings-subgroup > summary { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:11px 14px; cursor:pointer; list-style:none; }
+.settings-subgroup > summary::-webkit-details-marker { display:none; }
+.settings-subgroup > summary span { display:flex; flex-direction:column; gap:1px; min-width:0; }
+.settings-subgroup > summary .eyebrow { margin:0; font-family:var(--sans); font-size:9px; }
+.settings-subgroup > summary b { font-family:var(--sans); font-size:12px; font-weight:550; }
+.settings-subgroup > summary i { color:var(--muted); font-size:17px; font-style:normal; transition:transform .2s ease; }
+.settings-subgroup[open] > summary { background:color-mix(in srgb,var(--ink) 2.5%,transparent); border-bottom:1px solid var(--border); }
+.settings-subgroup[open] > summary i { transform:rotate(90deg); }
+.settings-group-body .settings-section { margin:0; border:0; border-radius:0; background:transparent; box-shadow:none; padding:13px 14px 15px; }
 
 /* 头像 + 昵称编辑行 */
 .identity-row { display:flex; align-items:center; gap:12px; margin-top:13px; }

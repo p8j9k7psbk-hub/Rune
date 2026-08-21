@@ -1,10 +1,11 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import "./mobile-fixes.css";
 
 type Tab = "home" | "chat" | "diary" | "settings";
-type ThemeName = "paper" | "sage" | "ink" | "claude";
+type ThemeName = "paper" | "sage" | "ink" | "claude" | "custom";
+type CustomTheme = { background: string; accent: string; text: string };
 type Anniversary = { id: number; name: string; date: string };
 type HealthSummary = { steps?: number; heartRate?: number; importedAt?: string; week?: number[] };
 type McpServer = { id: number; name: string; url: string; enabled: boolean; authMode?: "none" | "oauth"; requiresAuth?: boolean; token?: string };
@@ -306,12 +307,18 @@ function splitHomeMessage(text: string) {
   return { title: clean.slice(0, 26), sub: clean.slice(26, 70) };
 }
 
-const themes: Record<ThemeName, { label: string; swatch: string }> = {
+const themes: Record<Exclude<ThemeName, "custom">, { label: string; swatch: string }> = {
   paper: { label: "纸白", swatch: "#f2f0e9" },
   sage: { label: "苔绿", swatch: "#698266" },
   ink: { label: "夜墨", swatch: "#262724" },
   claude: { label: "Claude", swatch: "#d97757" },
 };
+
+function readableOn(hex: string) {
+  const value = hex.replace("#", "");
+  const rgb = value.length === 3 ? [...value].map((part) => parseInt(part + part, 16)) : [0, 2, 4].map((index) => parseInt(value.slice(index, index + 2), 16));
+  return (rgb[0] * 299 + rgb[1] * 587 + rgb[2] * 114) / 1000 > 145 ? "#171713" : "#fffdf8";
+}
 
 const defaultAnniversaries: Anniversary[] = [];
 
@@ -377,25 +384,34 @@ function parseAssistantReply(reply: string): Array<{ text: string; voiceText?: s
 }
 
 type VoiceConfig = {
+  provider: "minimax" | "elevenlabs";
   endpoint: string;
   groupId: string;
   voiceId: string;
   model: string;
   speed: number;
   autoPlay: boolean;   // Rune 回复后自动朗读
+  elevenLabsVoiceId: string;
+  elevenLabsModel: string;
 };
 
 const defaultVoiceConfig: VoiceConfig = {
+  provider: "minimax",
   endpoint: "https://api.minimax.chat/v1/t2a_v2",
   groupId: "",
   voiceId: "",
   model: "speech-02-hd",
   speed: 1,
   autoPlay: false,
+  elevenLabsVoiceId: "",
+  elevenLabsModel: "eleven_multilingual_v2",
 };
+
+const defaultCustomTheme: CustomTheme = { background: "#e9e4da", accent: "#8f7964", text: "#28241f" };
 
 // MiniMax Key 与通用 AI 配置保存在当前设备的 localStorage，不上传到 Rune 后端。
 const MINIMAX_KEY_STORAGE = "rune-minimax-key";
+const ELEVENLABS_KEY_STORAGE = "rune-elevenlabs-key";
 
 function hexToBytes(hex: string) {
   const clean = hex.trim();
@@ -405,16 +421,40 @@ function hexToBytes(hex: string) {
 }
 
 // MiniMax T2A：音频以十六进制字符串放在 data.audio 里，转成 Blob URL 交给 <audio> 播。
-async function synthesizeSpeech(text: string, config: VoiceConfig, apiKey: string): Promise<string> {
+async function synthesizeSpeech(text: string, config: VoiceConfig, minimaxKey: string, elevenLabsKey: string): Promise<string> {
   const clean = text.replace(/\s+/g, " ").trim();
   if (!clean) throw new Error("没有可朗读的内容。");
-  if (!apiKey) throw new Error("还没填 MiniMax API Key，去 Settings → 语音 里填。");
+  if (config.provider === "elevenlabs") {
+    if (!elevenLabsKey) throw new Error("还没填 ElevenLabs API Key，去 Settings → Voice 里填。");
+    if (!config.elevenLabsVoiceId) throw new Error("还没填 ElevenLabs Voice ID。");
+    const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(config.elevenLabsVoiceId)}?output_format=mp3_44100_128`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "xi-api-key": elevenLabsKey },
+      body: JSON.stringify({
+        text: clean.slice(0, 4000),
+        model_id: config.elevenLabsModel || defaultVoiceConfig.elevenLabsModel,
+        voice_settings: { speed: config.speed || 1 },
+      }),
+    });
+    if (!response.ok) {
+      const detail = await response.text();
+      try {
+        const parsed = JSON.parse(detail);
+        throw new Error(`合成失败：${parsed?.detail?.message || parsed?.detail || `HTTP ${response.status}`}`);
+      } catch (error) {
+        if (error instanceof Error && error.message.startsWith("合成失败：")) throw error;
+        throw new Error(`合成失败：HTTP ${response.status}`);
+      }
+    }
+    return URL.createObjectURL(await response.blob());
+  }
+  if (!minimaxKey) throw new Error("还没填 MiniMax API Key，去 Settings → Voice 里填。");
   if (!config.voiceId) throw new Error("还没填 Voice ID。");
   const base = (config.endpoint || defaultVoiceConfig.endpoint).replace(/\/+$/, "");
   const url = config.groupId ? `${base}?GroupId=${encodeURIComponent(config.groupId)}` : base;
   const response = await fetch(url, {
     method: "POST",
-    headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
+    headers: { "content-type": "application/json", authorization: `Bearer ${minimaxKey}` },
     body: JSON.stringify({
       model: config.model || defaultVoiceConfig.model,
       text: clean.slice(0, 4000),
@@ -905,10 +945,12 @@ function ChatView({
   profile,
   voiceConfig,
   minimaxKey,
+  elevenLabsKey,
 }: {
   aiApiBase: string;
   voiceConfig: VoiceConfig;
   minimaxKey: string;
+  elevenLabsKey: string;
   claudeKey: string;
   claudeModel: string;
   claudeModels: ClaudeModel[];
@@ -964,7 +1006,9 @@ function ChatView({
   const callTurnSequenceRef = useRef(0);
   const activeVoiceClaimRef = useRef<VoiceGenerationClaim | null>(null);
   const mcpSessionsRef = useRef<Record<number, { sessionId?: string; tools: McpTool[] }>>({});
-  const voiceReady = Boolean(minimaxKey && voiceConfig.voiceId);
+  const voiceReady = voiceConfig.provider === "elevenlabs"
+    ? Boolean(elevenLabsKey && voiceConfig.elevenLabsVoiceId)
+    : Boolean(minimaxKey && voiceConfig.voiceId);
 
   const connectMcpServer = async (server: McpServer) => {
     const cached = mcpSessionsRef.current[server.id];
@@ -1071,7 +1115,7 @@ function ChatView({
     stopAudio();
     let url = "";
     try {
-      url = await synthesizeSpeech(text, voiceConfig, minimaxKey);
+      url = await synthesizeSpeech(text, voiceConfig, minimaxKey, elevenLabsKey);
     } catch (error) {
       // 通话不能因为单次 MiniMax/TTS 请求失败就断在第一轮；先用系统声音念完，
       // 然后继续重新占用麦克风。普通语音条仍保留原错误提示。
@@ -1130,7 +1174,7 @@ function ChatView({
     if (existing) return existing;
     setPreparingIndex(index);
     try {
-      const url = await synthesizeSpeech(text, voiceConfig, minimaxKey);
+      const url = await synthesizeSpeech(text, voiceConfig, minimaxKey, elevenLabsKey);
       const duration = await new Promise<number>((resolve) => {
         const probe = new Audio(url);
         probe.onloadedmetadata = () => resolve(Number.isFinite(probe.duration) ? probe.duration : 0);
@@ -1361,7 +1405,7 @@ function ChatView({
   };
 
   const startCall = (initiatedBy: "user" | "assistant" = "user") => {
-    if (!voiceReady) { setChatNotice("先去 Settings → 语音 填好 MiniMax 的 Key 和 Voice ID。"); return; }
+    if (!voiceReady) { setChatNotice(`先去 Settings → Voice 填好 ${voiceConfig.provider === "elevenlabs" ? "ElevenLabs" : "MiniMax"} 的 Key 和 Voice ID。`); return; }
     unlockCallAudio();
     setIncomingCall(null);
     setCallActive(true);
@@ -2171,6 +2215,10 @@ function SettingsView({
   setVoiceConfig,
   minimaxKey,
   setMinimaxKey,
+  elevenLabsKey,
+  setElevenLabsKey,
+  customTheme,
+  setCustomTheme,
 }: {
   aiApiBase: string;
   setAiApiBase: (base: string) => void;
@@ -2180,6 +2228,10 @@ function SettingsView({
   setVoiceConfig: (config: VoiceConfig) => void;
   minimaxKey: string;
   setMinimaxKey: (key: string) => void;
+  elevenLabsKey: string;
+  setElevenLabsKey: (key: string) => void;
+  customTheme: CustomTheme;
+  setCustomTheme: (theme: CustomTheme) => void;
   theme: ThemeName;
   setTheme: (theme: ThemeName) => void;
   anniversaries: Anniversary[];
@@ -2203,14 +2255,16 @@ function SettingsView({
   const [newMcp, setNewMcp] = useState({ name: "", url: "", authMode: "none" as "none" | "oauth" });
   const [mcpStatus, setMcpStatus] = useState("");
   const [avatarNote, setAvatarNote] = useState("");
-  const voiceReady = Boolean(minimaxKey && voiceConfig.voiceId);
+  const voiceReady = voiceConfig.provider === "elevenlabs"
+    ? Boolean(elevenLabsKey && voiceConfig.elevenLabsVoiceId)
+    : Boolean(minimaxKey && voiceConfig.voiceId);
   const [voiceStatus, setVoiceStatus] = useState("");
   const [testingVoice, setTestingVoice] = useState(false);
   const [requestingMicrophone, setRequestingMicrophone] = useState(false);
   const [runningVoiceChecks, setRunningVoiceChecks] = useState(false);
   const [voiceChecks, setVoiceChecks] = useState({
     microphone: "尚未测试",
-    minimax: "尚未测试",
+    provider: "尚未测试",
     surface: "检测中…",
   });
 
@@ -2248,15 +2302,15 @@ function SettingsView({
 
   const runVoiceChecks = async () => {
     setRunningVoiceChecks(true);
-    setVoiceChecks((current) => ({ ...current, minimax: "正在调用…" }));
+    setVoiceChecks((current) => ({ ...current, provider: "正在调用…" }));
     await requestMicrophonePermission();
 
     try {
-      const url = await synthesizeSpeech("Rune 语音连接测试。", voiceConfig, minimaxKey);
+      const url = await synthesizeSpeech("Rune 语音连接测试。", voiceConfig, minimaxKey, elevenLabsKey);
       URL.revokeObjectURL(url);
-      setVoiceChecks((current) => ({ ...current, minimax: "调用成功" }));
+      setVoiceChecks((current) => ({ ...current, provider: "调用成功" }));
     } catch (error) {
-      setVoiceChecks((current) => ({ ...current, minimax: error instanceof Error ? error.message : "调用失败" }));
+      setVoiceChecks((current) => ({ ...current, provider: error instanceof Error ? error.message : "调用失败" }));
     } finally {
       setRunningVoiceChecks(false);
     }
@@ -2266,7 +2320,7 @@ function SettingsView({
     setTestingVoice(true);
     setVoiceStatus("");
     try {
-      const url = await synthesizeSpeech(`你好，我是${profile.name || "Rune"}。这是一段试听。`, voiceConfig, minimaxKey);
+      const url = await synthesizeSpeech(`你好，我是${profile.name || "Rune"}。这是一段试听。`, voiceConfig, minimaxKey, elevenLabsKey);
       const audio = new Audio(url);
       await audio.play();
       audio.onended = () => URL.revokeObjectURL(url);
@@ -2497,8 +2551,9 @@ function SettingsView({
       <details className="settings-group">
         <summary><span><b>Rune</b><small>人设、指令与模型</small></span><i aria-hidden="true">›</i></summary>
         <div className="settings-group-body">
+      <details className="settings-subgroup">
+        <summary><span><p className="eyebrow">Profile</p><b>头像与昵称</b></span><i aria-hidden="true">›</i></summary>
       <section className="settings-section">
-        <div className="settings-heading"><p className="eyebrow">Profile</p><h2>头像与昵称</h2></div>
 
         <div className="identity-row">
           <button className="identity-avatar" onClick={() => runeAvatarRef.current?.click()} aria-label="更换 Rune 头像">
@@ -2529,9 +2584,11 @@ function SettingsView({
         {avatarNote && <p className="setting-note">{avatarNote}</p>}
         <p className="setting-note">头像会自动裁成正方形并缩到 160px（约 8KB）再保存，不会占满存储。昵称会用在对话气泡和首页问候语上。</p>
       </section>
+      </details>
 
+      <details className="settings-subgroup">
+        <summary><span><p className="eyebrow">Instructions</p><b>人设与指令</b></span><i aria-hidden="true">›</i></summary>
       <section className="settings-section">
-        <div className="settings-heading"><p className="eyebrow">Instructions</p><h2>人设与指令</h2></div>
         <label className="field-label">Instructions
           <textarea
             className="instructions-input"
@@ -2543,9 +2600,11 @@ function SettingsView({
         </label>
         <p className="setting-note">这段直接作为 system prompt。当前日期、时区和工具调用说明会由程序自动追加在后面，不用你写。</p>
       </section>
+      </details>
 
+      <details className="settings-subgroup">
+        <summary><span><p className="eyebrow">AI connection</p><b>通用 AI API</b></span><i aria-hidden="true">›</i></summary>
       <section className="settings-section">
-        <div className="settings-heading"><p className="eyebrow">AI connection</p><h2>通用 AI API</h2></div>
         <label className="field-label">API 地址<input type="url" value={aiApiBase} onChange={(event) => { setAiApiBase(event.target.value); setClaudeStatus(""); }} placeholder="https://api.example.com/v1" autoComplete="off" /></label>
         <label className="field-label">API Key<input type="password" value={claudeKey} onChange={(event) => { setClaudeKey(event.target.value); localStorage.setItem("rune-claude-key", event.target.value); setClaudeStatus(""); }} placeholder="sk-••••••••" autoComplete="off" /></label>
         <button className="solid-action" onClick={loadClaudeModels} disabled={loadingModels}>
@@ -2560,28 +2619,51 @@ function SettingsView({
         {claudeStatus && <p className={claudeStatus.startsWith("连接成功") ? "success-note" : "error-note"}>{claudeStatus}</p>}
         <p className="setting-note">兼容 Anthropic 原生接口，以及提供 <code>/models</code> 与 <code>/chat/completions</code> 的 OpenAI-compatible 接口。部分服务商会阻止浏览器直连，这种情况需要开启 CORS 或使用服务器代理。</p>
       </section>
+      </details>
+      <details className="settings-subgroup">
+        <summary><span><p className="eyebrow">Voice</p><b>语音</b></span><i aria-hidden="true">›</i></summary>
       <section className="settings-section">
-        <div className="settings-heading"><p className="eyebrow">Voice</p><h2>语音（MiniMax）</h2></div>
-        <label className="field-label">API Key
-          <input type="password" value={minimaxKey} autoComplete="off" placeholder="控制台 → 接口密钥 里创建"
-            onChange={(event) => { setMinimaxKey(event.target.value); localStorage.setItem(MINIMAX_KEY_STORAGE, event.target.value); setVoiceStatus(""); }} />
+        <label className="field-label">声音服务
+          <select value={voiceConfig.provider} onChange={(event) => { setVoiceConfig({ ...voiceConfig, provider: event.target.value as VoiceConfig["provider"] }); setVoiceStatus(""); setVoiceChecks((current) => ({ ...current, provider: "尚未测试" })); }}>
+            <option value="minimax">MiniMax</option>
+            <option value="elevenlabs">ElevenLabs</option>
+          </select>
         </label>
-        <label className="field-label">Group ID
-          <input value={voiceConfig.groupId} autoComplete="off" placeholder="控制台账户信息里那串数字（国际站账号留空）"
-            onChange={(event) => setVoiceConfig({ ...voiceConfig, groupId: event.target.value.trim() })} />
-        </label>
-        <label className="field-label">Voice ID
-          <input value={voiceConfig.voiceId} autoComplete="off" placeholder="Voice Library 里那个克隆音色的 voice_id"
-            onChange={(event) => setVoiceConfig({ ...voiceConfig, voiceId: event.target.value.trim() })} />
-        </label>
-        <label className="field-label">模型
-          <input value={voiceConfig.model} autoComplete="off" placeholder="speech-02-hd"
-            onChange={(event) => setVoiceConfig({ ...voiceConfig, model: event.target.value.trim() })} />
-        </label>
-        <label className="field-label">接口地址
-          <input type="url" value={voiceConfig.endpoint} autoComplete="off" placeholder={defaultVoiceConfig.endpoint} list="minimax-endpoints"
-            onChange={(event) => setVoiceConfig({ ...voiceConfig, endpoint: event.target.value.trim() })} />
-        </label>
+        {voiceConfig.provider === "minimax" ? <>
+          <label className="field-label">MiniMax API Key
+            <input type="password" value={minimaxKey} autoComplete="off" placeholder="控制台 → 接口密钥 里创建"
+              onChange={(event) => { setMinimaxKey(event.target.value); localStorage.setItem(MINIMAX_KEY_STORAGE, event.target.value); setVoiceStatus(""); }} />
+          </label>
+          <label className="field-label">Group ID
+            <input value={voiceConfig.groupId} autoComplete="off" placeholder="控制台账户信息里那串数字（国际站账号留空）"
+              onChange={(event) => setVoiceConfig({ ...voiceConfig, groupId: event.target.value.trim() })} />
+          </label>
+          <label className="field-label">MiniMax Voice ID
+            <input value={voiceConfig.voiceId} autoComplete="off" placeholder="Voice Library 里那个克隆音色的 voice_id"
+              onChange={(event) => setVoiceConfig({ ...voiceConfig, voiceId: event.target.value.trim() })} />
+          </label>
+          <label className="field-label">MiniMax 模型
+            <input value={voiceConfig.model} autoComplete="off" placeholder="speech-02-hd"
+              onChange={(event) => setVoiceConfig({ ...voiceConfig, model: event.target.value.trim() })} />
+          </label>
+          <label className="field-label">接口地址
+            <input type="url" value={voiceConfig.endpoint} autoComplete="off" placeholder={defaultVoiceConfig.endpoint} list="minimax-endpoints"
+              onChange={(event) => setVoiceConfig({ ...voiceConfig, endpoint: event.target.value.trim() })} />
+          </label>
+        </> : <>
+          <label className="field-label">ElevenLabs API Key
+            <input type="password" value={elevenLabsKey} autoComplete="off" placeholder="ElevenLabs API Key"
+              onChange={(event) => { setElevenLabsKey(event.target.value); localStorage.setItem(ELEVENLABS_KEY_STORAGE, event.target.value); setVoiceStatus(""); }} />
+          </label>
+          <label className="field-label">ElevenLabs Voice ID
+            <input value={voiceConfig.elevenLabsVoiceId} autoComplete="off" placeholder="Voice Library 里的 Voice ID"
+              onChange={(event) => setVoiceConfig({ ...voiceConfig, elevenLabsVoiceId: event.target.value.trim() })} />
+          </label>
+          <label className="field-label">ElevenLabs 模型
+            <input value={voiceConfig.elevenLabsModel} autoComplete="off" placeholder="eleven_multilingual_v2"
+              onChange={(event) => setVoiceConfig({ ...voiceConfig, elevenLabsModel: event.target.value.trim() })} />
+          </label>
+        </>}
         <label className="field-label">语速 {voiceConfig.speed.toFixed(1)}×
           <input type="range" min="0.5" max="2" step="0.1" value={voiceConfig.speed}
             onChange={(event) => setVoiceConfig({ ...voiceConfig, speed: Number(event.target.value) })} />
@@ -2601,15 +2683,52 @@ function SettingsView({
           <div className="capability-check-head"><p className="eyebrow">语音测试</p><button onClick={runVoiceChecks} disabled={runningVoiceChecks}>{runningVoiceChecks ? "测试中…" : "全部测试"}</button></div>
           <ul>
             <li className="capability-action-row"><b className={voiceChecks.microphone === "权限正常" ? "ok" : ""}>1</b><span>麦克风权限<small>{voiceChecks.microphone}</small></span><button onClick={requestMicrophonePermission} disabled={requestingMicrophone}>{requestingMicrophone ? "请求中…" : "请求权限"}</button></li>
-            <li><b className={voiceChecks.minimax === "调用成功" ? "ok" : ""}>2</b><span>MiniMax 可否调用<small>{voiceChecks.minimax}</small></span></li>
+            <li><b className={voiceChecks.provider === "调用成功" ? "ok" : ""}>2</b><span>{voiceConfig.provider === "elevenlabs" ? "ElevenLabs" : "MiniMax"} 可否调用<small>{voiceChecks.provider}</small></span></li>
             <li><b className="ok">3</b><span>当前打开界面<small>{voiceChecks.surface}</small></span></li>
           </ul>
         </div>
         <p className="setting-note">Key 和语音配置会保存在这台设备，不会上传到 Rune 后端；清除网站数据或删除 PWA 时会一并移除。<br/>{profile.name || "Rune"} 会自己判断什么时候用语音说话（情绪浓的时候），不是每条都念，所以不会一直烧额度。语音识别用系统自带能力，不额外收费。</p>
       </section>
+      </details>
 
+        </div>
+      </details>
+
+      <details className="settings-group">
+        <summary><span><b>Us</b><small>认识的日子与纪念日</small></span><i aria-hidden="true">›</i></summary>
+        <div className="settings-group-body">
+      <details className="settings-subgroup">
+        <summary><span><p className="eyebrow">Us</p><b>和 Rune 认识的日期</b></span><i aria-hidden="true">›</i></summary>
       <section className="settings-section">
-        <div className="settings-heading"><p className="eyebrow">Tools</p><h2>MCP 连接</h2></div>
+        <label className="field-label">开始日期<input type="date" value={metDate} onChange={(event) => setMetDate(event.target.value)} /></label>
+        <p className="setting-note">{metDate ? `首页会每天自动更新，目前是第 ${daysTogether(metDate)} 天。` : "设置后，首页的 Day 数字会每天自动更新。"}</p>
+      </section>
+      </details>
+      <details className="settings-subgroup">
+        <summary><span><p className="eyebrow">Important dates</p><b>纪念日</b></span><i aria-hidden="true">›</i></summary>
+      <section className="settings-section">
+        <div className="editable-list">
+          {anniversaries.map((item) => (
+            <div className="editable-row" key={item.id}>
+              <input aria-label="纪念日名称" value={item.name} onChange={(event) => updateAnniversary(item.id, "name", event.target.value)} />
+              <input aria-label={`${item.name}日期`} type="date" value={item.date} onChange={(event) => updateAnniversary(item.id, "date", event.target.value)} />
+              <button aria-label={`删除${item.name}`} onClick={() => setAnniversaries(anniversaries.filter((date) => date.id !== item.id))}>×</button>
+            </div>
+          ))}
+        </div>
+        <button className="outline-action" onClick={addAnniversary}>＋ 添加纪念日</button>
+        <p className="setting-note">会自动保存在这台设备，首页倒数天数实时计算。</p>
+      </section>
+      </details>
+        </div>
+      </details>
+
+      <details className="settings-group">
+        <summary><span><b>Tools</b><small>MCP、健康数据与提醒</small></span><i aria-hidden="true">›</i></summary>
+        <div className="settings-group-body">
+      <details className="settings-subgroup">
+        <summary><span><p className="eyebrow">MCP</p><b>MCP 连接</b></span><i aria-hidden="true">›</i></summary>
+      <section className="settings-section">
         <div className="mcp-list">
           {mcpServers.map((server) => (
             <div className="mcp-row" key={server.id}>
@@ -2627,39 +2746,10 @@ function SettingsView({
         </div>
         {mcpStatus && <p className="error-note">{mcpStatus}</p>}
       </section>
-        </div>
       </details>
-
-      <details className="settings-group">
-        <summary><span><b>Us</b><small>认识的日子与纪念日</small></span><i aria-hidden="true">›</i></summary>
-        <div className="settings-group-body">
+      <details className="settings-subgroup">
+        <summary><span><p className="eyebrow">Health data</p><b>Apple Health</b></span><i aria-hidden="true">›</i></summary>
       <section className="settings-section">
-        <div className="settings-heading"><p className="eyebrow">Us</p><h2>和 Rune 认识的日期</h2></div>
-        <label className="field-label">开始日期<input type="date" value={metDate} onChange={(event) => setMetDate(event.target.value)} /></label>
-        <p className="setting-note">{metDate ? `首页会每天自动更新，目前是第 ${daysTogether(metDate)} 天。` : "设置后，首页的 Day 数字会每天自动更新。"}</p>
-      </section>
-      <section className="settings-section">
-        <div className="settings-heading"><p className="eyebrow">Important dates</p><h2>纪念日</h2></div>
-        <div className="editable-list">
-          {anniversaries.map((item) => (
-            <div className="editable-row" key={item.id}>
-              <input aria-label="纪念日名称" value={item.name} onChange={(event) => updateAnniversary(item.id, "name", event.target.value)} />
-              <input aria-label={`${item.name}日期`} type="date" value={item.date} onChange={(event) => updateAnniversary(item.id, "date", event.target.value)} />
-              <button aria-label={`删除${item.name}`} onClick={() => setAnniversaries(anniversaries.filter((date) => date.id !== item.id))}>×</button>
-            </div>
-          ))}
-        </div>
-        <button className="outline-action" onClick={addAnniversary}>＋ 添加纪念日</button>
-        <p className="setting-note">会自动保存在这台设备，首页倒数天数实时计算。</p>
-      </section>
-        </div>
-      </details>
-
-      <details className="settings-group">
-        <summary><span><b>Data</b><small>健康数据与通知</small></span><i aria-hidden="true">›</i></summary>
-        <div className="settings-group-body">
-      <section className="settings-section">
-        <div className="settings-heading"><p className="eyebrow">Health data</p><h2>Apple Health</h2></div>
         <div className="connection-card">
           <span className="connection-icon health-icon">♥</span>
           <span><strong>{health.importedAt ? "已导入 Health 数据" : "尚未连接"}</strong><small>{health.importedAt ? `上次导入：${health.importedAt}` : "网页版不能直接弹出 HealthKit 授权"}</small></span>
@@ -2670,8 +2760,10 @@ function SettingsView({
         {healthMessage && <p className="success-note">{healthMessage}</p>}
         <p className="setting-note">直接 HealthKit 授权需要后续做一个 iPhone 原生伴侣 App；这一版先支持 Apple 官方导出的 XML，数据只在本机解析和保存。</p>
       </section>
+      </details>
+      <details className="settings-subgroup">
+        <summary><span><p className="eyebrow">Reminders</p><b>系统通知</b></span><i aria-hidden="true">›</i></summary>
       <section className="settings-section">
-        <div className="settings-heading"><p className="eyebrow">Reminders</p><h2>系统通知</h2></div>
         <div className="connection-card">
           <span className="connection-icon notification-icon">◉</span>
           <span><strong>Rune Web Push</strong><small>从主屏幕 Rune 发到锁屏、通知中心和 Apple Watch</small></span>
@@ -2681,24 +2773,37 @@ function SettingsView({
         {notificationStatus && <p className={/已经开启|已经发送/.test(notificationStatus) ? "success-note" : "error-note"}>{notificationStatus}</p>}
         <p className="setting-note">请先把 Rune 添加到 iPhone 主屏幕，再从主屏幕打开 Rune 并点击“开启 Web Push”。之后提醒由 Rune 的 Cloudflare Worker 定时发送；点击通知会回到主屏幕 Rune。通知名称和头像跟随 Rune 设置。</p>
       </section>
+      </details>
         </div>
       </details>
 
       <details className="settings-group">
         <summary><span><b>Appearance</b><small>主题外观</small></span><i aria-hidden="true">›</i></summary>
         <div className="settings-group-body">
+      <details className="settings-subgroup">
+        <summary><span><p className="eyebrow">Appearance</p><b>主题颜色</b></span><i aria-hidden="true">›</i></summary>
       <section className="settings-section">
-        <div className="settings-heading"><p className="eyebrow">Appearance</p><h2>主题颜色</h2></div>
         <div className="theme-options">
-          {(Object.keys(themes) as ThemeName[]).map((key) => (
+          {(Object.keys(themes) as Array<Exclude<ThemeName, "custom">>).map((key) => (
             <button key={key} className={theme === key ? "theme-option active" : "theme-option"} onClick={() => setTheme(key)}>
               <i style={{ background: themes[key].swatch }} />
               <span>{themes[key].label}</span>
               <b>{theme === key ? "✓" : ""}</b>
             </button>
           ))}
+          <button className={theme === "custom" ? "theme-option active" : "theme-option"} onClick={() => setTheme("custom")}>
+            <i style={{ background: customTheme.accent }} />
+            <span>自选</span>
+            <b>{theme === "custom" ? "✓" : ""}</b>
+          </button>
+        </div>
+        <div className="custom-theme-controls">
+          <label>背景<input type="color" value={customTheme.background} onChange={(event) => { setCustomTheme({ ...customTheme, background: event.target.value }); setTheme("custom"); }} /></label>
+          <label>强调色<input type="color" value={customTheme.accent} onChange={(event) => { setCustomTheme({ ...customTheme, accent: event.target.value }); setTheme("custom"); }} /></label>
+          <label>文字<input type="color" value={customTheme.text} onChange={(event) => { setCustomTheme({ ...customTheme, text: event.target.value }); setTheme("custom"); }} /></label>
         </div>
       </section>
+      </details>
         </div>
       </details>
 
@@ -2745,6 +2850,7 @@ function RuneIsland({ surface, profile, onDismiss, onOpenChat }: { surface: Rune
 export default function Pulse() {
   const [tab, setTab] = useState<Tab>("home");
   const [theme, setTheme] = useState<ThemeName>("paper");
+  const [customTheme, setCustomTheme] = useState<CustomTheme>(defaultCustomTheme);
   const [anniversaries, setAnniversaries] = useState<Anniversary[]>(defaultAnniversaries);
   const [health, setHealth] = useState<HealthSummary>({});
   const [mcpServers, setMcpServers] = useState<McpServer[]>(defaultMcpServers);
@@ -2756,6 +2862,7 @@ export default function Pulse() {
   const [profile, setProfile] = useState<Profile>(defaultProfile);
   const [voiceConfig, setVoiceConfig] = useState<VoiceConfig>(defaultVoiceConfig);
   const [minimaxKey, setMinimaxKey] = useState("");
+  const [elevenLabsKey, setElevenLabsKey] = useState("");
   const [homeMessage, setHomeMessage] = useState("今天也辛苦了。");
   const [homeMessageAt, setHomeMessageAt] = useState<number | null>(null);
   const [hydrated, setHydrated] = useState(false);
@@ -2810,7 +2917,8 @@ export default function Pulse() {
       const stored = localStorage.getItem("pulse-preferences");
       if (stored) {
         const data = JSON.parse(stored);
-        if (data.theme && data.theme in themes) setTheme(data.theme);
+        if (data.theme && (data.theme === "custom" || data.theme in themes)) setTheme(data.theme);
+        if (data.customTheme) setCustomTheme({ ...defaultCustomTheme, ...data.customTheme });
         if (data.anniversaries) setAnniversaries(data.anniversaries);
         if (data.health) setHealth(data.health);
         if (data.mcpServers) setMcpServers(data.mcpServers);
@@ -2831,6 +2939,7 @@ export default function Pulse() {
         return value;
       };
       setMinimaxKey(migrateValue(MINIMAX_KEY_STORAGE));
+      setElevenLabsKey(migrateValue(ELEVENLABS_KEY_STORAGE));
       setClaudeKey(migrateValue("rune-claude-key"));
       setAiApiBase(migrateValue("rune-ai-api-base", "https://api.anthropic.com/v1"));
       setClaudeModel(migrateValue("rune-claude-model"));
@@ -2844,8 +2953,8 @@ export default function Pulse() {
   useEffect(() => {
     if (typeof globalThis.document === "undefined") return;
     if (!hydrated) return;
-    localStorage.setItem("pulse-preferences", JSON.stringify({ theme, anniversaries, health, mcpServers, metDate, homeMessage, homeMessageAt, profile, voiceConfig }));
-  }, [theme, anniversaries, health, mcpServers, metDate, homeMessage, homeMessageAt, profile, hydrated]);
+    localStorage.setItem("pulse-preferences", JSON.stringify({ theme, customTheme, anniversaries, health, mcpServers, metDate, homeMessage, homeMessageAt, profile, voiceConfig }));
+  }, [theme, customTheme, anniversaries, health, mcpServers, metDate, homeMessage, homeMessageAt, profile, voiceConfig, hydrated]);
 
   useEffect(() => {
     if (hydrated) syncNotificationProfile(profile).catch(() => undefined);
@@ -2890,7 +2999,12 @@ export default function Pulse() {
   }, [aiApiBase]);
 
   return (
-    <div className={`app theme-${theme}`}>
+    <div className={`app theme-${theme}`} style={theme === "custom" ? {
+      "--custom-bg": customTheme.background,
+      "--custom-accent": customTheme.accent,
+      "--custom-ink": customTheme.text,
+      "--custom-accent-contrast": readableOn(customTheme.accent),
+    } as CSSProperties : undefined}>
       {splashState !== "hidden" && <SplashScreen leaving={splashState === "leaving"} />}
       <div className="ambient one" />
       <div className="ambient two" />
@@ -2899,10 +3013,10 @@ export default function Pulse() {
         {surface && <RuneIsland surface={surface} profile={profile} onDismiss={() => setSurface(null)} onOpenChat={() => { setSurface(null); setTab("chat"); }} />}
         {tab === "home" && <HomeView goDiary={() => setTab("diary")} goChat={() => setTab("chat")} goSettings={() => setTab("settings")} anniversaries={anniversaries} health={health} metDate={metDate} homeMessage={homeMessage} homeMessageAt={homeMessageAt} profile={profile} />}
         <div className="persistent-chat-panel" hidden={tab !== "chat"}>
-          <ChatView aiApiBase={aiApiBase} claudeKey={claudeKey} claudeModel={claudeModel} claudeModels={claudeModels} setClaudeModel={setClaudeModel} goSettings={() => setTab("settings")} mcpServers={mcpServers} setHomeMessage={updateHomeMessage} profile={profile} voiceConfig={voiceConfig} minimaxKey={minimaxKey} />
+          <ChatView aiApiBase={aiApiBase} claudeKey={claudeKey} claudeModel={claudeModel} claudeModels={claudeModels} setClaudeModel={setClaudeModel} goSettings={() => setTab("settings")} mcpServers={mcpServers} setHomeMessage={updateHomeMessage} profile={profile} voiceConfig={voiceConfig} minimaxKey={minimaxKey} elevenLabsKey={elevenLabsKey} />
         </div>
         {tab === "diary" && <DiaryView profile={profile} />}
-        {tab === "settings" && <SettingsView aiApiBase={aiApiBase} setAiApiBase={setAiApiBase} theme={theme} setTheme={setTheme} anniversaries={anniversaries} setAnniversaries={setAnniversaries} health={health} setHealth={setHealth} mcpServers={mcpServers} setMcpServers={setMcpServers} metDate={metDate} setMetDate={setMetDate} claudeKey={claudeKey} setClaudeKey={setClaudeKey} claudeModel={claudeModel} setClaudeModel={setClaudeModel} claudeModels={claudeModels} setClaudeModels={setClaudeModels} profile={profile} setProfile={setProfile} voiceConfig={voiceConfig} setVoiceConfig={setVoiceConfig} minimaxKey={minimaxKey} setMinimaxKey={setMinimaxKey} />}
+        {tab === "settings" && <SettingsView aiApiBase={aiApiBase} setAiApiBase={setAiApiBase} theme={theme} setTheme={setTheme} customTheme={customTheme} setCustomTheme={setCustomTheme} anniversaries={anniversaries} setAnniversaries={setAnniversaries} health={health} setHealth={setHealth} mcpServers={mcpServers} setMcpServers={setMcpServers} metDate={metDate} setMetDate={setMetDate} claudeKey={claudeKey} setClaudeKey={setClaudeKey} claudeModel={claudeModel} setClaudeModel={setClaudeModel} claudeModels={claudeModels} setClaudeModels={setClaudeModels} profile={profile} setProfile={setProfile} voiceConfig={voiceConfig} setVoiceConfig={setVoiceConfig} minimaxKey={minimaxKey} setMinimaxKey={setMinimaxKey} elevenLabsKey={elevenLabsKey} setElevenLabsKey={setElevenLabsKey} />}
 
         <nav className="bottom-nav" aria-label="主导航">
           <button className={tab === "home" ? "active" : ""} onClick={() => setTab("home")} aria-label="首页"><i><NavIcon name="home" /></i><span>Home</span></button>

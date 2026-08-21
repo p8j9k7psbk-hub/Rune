@@ -14,7 +14,7 @@ type ClaudeModel = { id: string; display_name: string; created_at?: string };
 type ChatAttachment = { id: number; name: string; kind: "image" | "text"; mediaType: string; data: string };
 type ToolTrace = { name: string; server?: string; input?: unknown; output?: unknown; status: "完成" | "失败" | "等待确认" };
 type TokenUsage = { input: number; output: number; total: number };
-type ChatMessage = { role: "user" | "assistant"; text: string; attachments?: ChatAttachment[]; voice?: boolean; reasoning?: string; toolTraces?: ToolTrace[]; usage?: TokenUsage };
+type ChatMessage = { role: "user" | "assistant"; text: string; attachments?: ChatAttachment[]; voice?: boolean; reasoning?: string; toolTraces?: ToolTrace[]; usage?: TokenUsage; previousReplies?: ChatMessage[] };
 type RuneAction = { id: string; name: "add_todo" | "write_diary" | "set_home_message" | "create_reminder"; input: Record<string, string>; status: "pending" | "done" | "cancelled" };
 type RuneSurface = { mode: "call" | "alarm" | "reminder"; title: string; content: string };
 type Profile = {
@@ -799,6 +799,8 @@ function ChatView({
   const [conversations, setConversations] = useState<StoredConversation[]>([]);
   const [activeId, setActiveId] = useState(0);
   const [showHistory, setShowHistory] = useState(false);
+  const [editingIndex, setEditingIndex] = useState<number | null>(null);
+  const [editDraft, setEditDraft] = useState("");
   const hydrated = useRef(false);
   const attachmentRef = useRef<HTMLInputElement>(null);
   const messageStreamRef = useRef<HTMLElement>(null);
@@ -1153,6 +1155,8 @@ function ChatView({
     setActions([]);
     setAttachments([]);
     setInput("");
+    setEditingIndex(null);
+    setEditDraft("");
     setShowHistory(false);
   };
 
@@ -1196,6 +1200,8 @@ function ChatView({
     setInput("");
     setAttachments([]);
     setActions([]);
+    setEditingIndex(null);
+    setEditDraft("");
     setActiveId(Date.now());
     setShowHistory(false);
     setChatNotice("已开启新对话");
@@ -1234,19 +1240,37 @@ function ChatView({
     setMessages((items) => [...items, { role: "assistant", text: `${action.name === "add_todo" ? "待办" : action.name === "write_diary" ? "日记" : action.name === "set_home_message" ? "首页文字" : "提醒"}已经更新。` }]);
   };
 
-  const sendMessage = async (spokenText?: string): Promise<string> => {
+  const sendMessage = async (spokenText?: string, editIndex?: number): Promise<string> => {
     const raw = (spokenText ?? input).trim();
     const text = raw;
     if ((!text && !attachments.length) || sending) return "";
-    const outgoingAttachments = attachments;
-    const nextMessages: ChatMessage[] = [...messagesRef.current, { role: "user", text, attachments: outgoingAttachments }];
+    const editedMessage = editIndex === undefined ? undefined : messagesRef.current[editIndex];
+    const outgoingAttachments = editedMessage?.attachments || attachments;
+    const oldReply = editIndex === undefined || messagesRef.current[editIndex + 1]?.role !== "assistant" ? undefined : messagesRef.current[editIndex + 1];
+    const previousReplies = oldReply
+      ? [...(oldReply.previousReplies || []), { ...oldReply, previousReplies: undefined }]
+      : [];
+    const nextMessages: ChatMessage[] = editIndex === undefined
+      ? [...messagesRef.current, { role: "user", text, attachments: outgoingAttachments }]
+      : [...messagesRef.current.slice(0, editIndex), { ...editedMessage, role: "user", text, attachments: outgoingAttachments }];
     messagesRef.current = nextMessages;
     setMessages(nextMessages);
     setInput("");
     setAttachments([]);
+    setEditingIndex(null);
+    setEditDraft("");
+    if (editIndex !== undefined) {
+      setActions([]);
+      const replyIndex = nextMessages.length;
+      const oldClip = clipsRef.current[replyIndex];
+      if (oldClip?.url.startsWith("blob:")) URL.revokeObjectURL(oldClip.url);
+      delete clipsRef.current[replyIndex];
+      setClips({ ...clipsRef.current });
+      setShownText((current) => { const next = { ...current }; delete next[replyIndex]; return next; });
+    }
     if (!claudeKey || !claudeModel) {
       const hint = "先去 Settings 连接 AI API 并选择模型，我就可以真正回复你了。";
-      messagesRef.current = [...nextMessages, { role: "assistant", text: hint }];
+      messagesRef.current = [...nextMessages, { role: "assistant", text: hint, previousReplies: previousReplies.length ? previousReplies : undefined }];
       setMessages(messagesRef.current);
       return hint;
     }
@@ -1392,7 +1416,7 @@ ${voiceReady ? "当这句话情绪比较浓、更适合说出来而不是打字�
       const spoken = reply.replace(VOICE_MARK, "").trim();
       const finalReply = spoken || reply || (proposed.length ? "我准备执行下面的操作，请你确认。" : "我在。");
       const replyIndex = nextMessages.length;
-      messagesRef.current = [...nextMessages, { role: "assistant", text: finalReply, voice: wantsVoice && voiceReady, reasoning: reasoning || undefined, toolTraces: toolTraces.length ? toolTraces : undefined, usage: usage.total ? usage : undefined }];
+      messagesRef.current = [...nextMessages, { role: "assistant", text: finalReply, voice: wantsVoice && voiceReady, reasoning: reasoning || undefined, toolTraces: toolTraces.length ? toolTraces : undefined, usage: usage.total ? usage : undefined, previousReplies: previousReplies.length ? previousReplies : undefined }];
       setMessages(messagesRef.current);
       // 首页那张卡片跟着对话走：每次回复都同步过去，附带时间戳。
       if (finalReply) setHomeMessage(finalReply);
@@ -1406,7 +1430,7 @@ ${voiceReady ? "当这句话情绪比较浓、更适合说出来而不是打字�
       return finalReply;
     } catch (error) {
       const failure = `连接失败：${error instanceof Error ? error.message : "请检查 API Key 和网络。"}`;
-      messagesRef.current = [...nextMessages, { role: "assistant", text: failure }];
+      messagesRef.current = [...nextMessages, { role: "assistant", text: failure, previousReplies: previousReplies.length ? previousReplies : undefined }];
       setMessages(messagesRef.current);
       return failure;
     } finally {
@@ -1415,6 +1439,7 @@ ${voiceReady ? "当这句话情绪比较浓、更适合说出来而不是打字�
   };
 
   const callLabel = { idle: "接通中…", listening: "在听你说", thinking: "正在想", speaking: `${profile.name || "Rune"} 在说` }[callStage];
+  const lastEditableUserIndex = messages.reduce((latest, message, index) => message.role === "user" ? index : latest, -1);
 
   return (
     <main className="page claude-chat-page">
@@ -1494,7 +1519,15 @@ ${voiceReady ? "当这句话情绪比较浓、更适合说出来而不是打字�
               {/* 自己发的消息不显示昵称，头像已经足够区分 */}
               {message.role === "assistant" && <span className="msg-name">{profile.name || "Rune"}</span>}
               {!!message.attachments?.length && <div className="sent-attachments">{message.attachments.map((attachment) => <span key={attachment.id}>{attachment.kind === "image" ? "▧" : "≡"} {attachment.name}</span>)}</div>}
-              {message.voice ? (
+              {message.role === "user" && editingIndex === index ? (
+                <div className="message-edit-form">
+                  <textarea value={editDraft} onChange={(event) => setEditDraft(event.target.value)} autoFocus rows={3} aria-label="编辑消息" />
+                  <div>
+                    <button onClick={() => { setEditingIndex(null); setEditDraft(""); }}>取消</button>
+                    <button disabled={!editDraft.trim() || sending} onClick={() => sendMessage(editDraft, index)}>保存并重新回复</button>
+                  </div>
+                </div>
+              ) : message.voice ? (
                 <div className="voice-message">
                   <button
                     className={speakingIndex === index ? "voice-bubble playing" : "voice-bubble"}
@@ -1514,6 +1547,21 @@ ${voiceReady ? "当这句话情绪比较浓、更适合说出来而不是打字�
                 </div>
               ) : (
                 message.text && <p>{message.text}</p>
+              )}
+              {message.role === "user" && index === lastEditableUserIndex && editingIndex !== index && !sending && (
+                <button className="message-edit-button" onClick={() => { setEditingIndex(index); setEditDraft(message.text); }}>编辑</button>
+              )}
+              {message.role === "assistant" && !!message.previousReplies?.length && (
+                <details className="previous-replies">
+                  <summary>上一轮回复 · {message.previousReplies.length}</summary>
+                  {message.previousReplies.map((reply, replyIndex) => (
+                    <section key={replyIndex}>
+                      <small>版本 {replyIndex + 1}</small>
+                      <p>{reply.text}</p>
+                      {reply.usage && <em>{reply.usage.total.toLocaleString()} tokens</em>}
+                    </section>
+                  ))}
+                </details>
               )}
               {message.role === "assistant" && (!!message.reasoning || !!message.toolTraces?.length) && (
                 <details className="message-trace">

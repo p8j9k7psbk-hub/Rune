@@ -17,6 +17,7 @@ type TokenUsage = { input: number; output: number; total: number };
 type ChatMessage = { role: "user" | "assistant"; text: string; attachments?: ChatAttachment[]; voice?: boolean; voiceText?: string; callRecord?: VoiceCallRecord; reasoning?: string; toolTraces?: ToolTrace[]; usage?: TokenUsage; previousReplies?: ChatMessage[]; revisions?: Array<{ savedAt: number; messages: ChatMessage[] }> };
 type VoiceCallTurn = { at: number; user: string; assistant: string };
 type VoiceCallRecord = { id: string; startedAt: number; endedAt: number; duration: number; initiatedBy?: "user" | "assistant"; turns: VoiceCallTurn[] };
+type VoiceGenerationClaim = { callId: string; turnId: string; turnSequence: number; generationId: string };
 type RuneAction = { id: string; name: "add_todo" | "write_diary" | "set_home_message" | "create_reminder" | "start_voice_call"; input: Record<string, string>; status: "pending" | "done" | "cancelled" };
 type RuneSurface = { mode: "call" | "alarm" | "reminder"; title: string; content: string };
 type Profile = {
@@ -208,6 +209,14 @@ function formatDuration(seconds: number) {
   const safe = Math.max(0, Math.floor(seconds));
   const minutes = Math.floor(safe / 60);
   return `${String(minutes).padStart(2, "0")}:${String(safe % 60).padStart(2, "0")}`;
+}
+
+function sameVoiceClaim(left: VoiceGenerationClaim | null, right: VoiceGenerationClaim | null) {
+  return Boolean(left && right
+    && left.callId === right.callId
+    && left.turnId === right.turnId
+    && left.turnSequence === right.turnSequence
+    && left.generationId === right.generationId);
 }
 
 // 附件里的图片是 base64，一张手机照片就可能有几 MB。聊天历史因此使用 IndexedDB，
@@ -944,6 +953,7 @@ function ChatView({
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const callAudioRef = useRef<HTMLAudioElement | null>(null);
+  const callMicStreamRef = useRef<MediaStream | null>(null);
   const callActiveRef = useRef(false);
   const callStartedAtRef = useRef(0);
   const callTurnsRef = useRef<VoiceCallTurn[]>([]);
@@ -951,6 +961,9 @@ function ChatView({
   const callInitiatorRef = useRef<"user" | "assistant">("user");
   const lastAssistantSpeechRef = useRef("");
   const callLoopRef = useRef(false);
+  const callSessionIdRef = useRef("");
+  const callTurnSequenceRef = useRef(0);
+  const activeVoiceClaimRef = useRef<VoiceGenerationClaim | null>(null);
   const mcpSessionsRef = useRef<Record<number, { sessionId?: string; tools: McpTool[] }>>({});
   const voiceReady = Boolean(minimaxKey && voiceConfig.voiceId);
 
@@ -1055,7 +1068,7 @@ function ChatView({
   });
 
   // 朗读一段文字，返回一个在播放结束时 resolve 的 Promise（通话模式要靠它串起来）
-  const speak = async (text: string, index: number | null) => {
+  const speak = async (text: string, index: number | null, claim: VoiceGenerationClaim | null = null) => {
     stopAudio();
     let url = "";
     try {
@@ -1068,6 +1081,10 @@ function ChatView({
         return;
       }
       throw error;
+    }
+    if (claim && !sameVoiceClaim(claim, activeVoiceClaimRef.current)) {
+      URL.revokeObjectURL(url);
+      return;
     }
     const audio = callActiveRef.current ? (callAudioRef.current || new Audio()) : new Audio();
     if (callActiveRef.current) callAudioRef.current = audio; else audioRef.current = audio;
@@ -1094,6 +1111,11 @@ function ChatView({
       };
       audio.play().catch(() => { blocked = true; finish(); });
     });
+    if (claim && !sameVoiceClaim(claim, activeVoiceClaimRef.current)) {
+      audio.pause();
+      URL.revokeObjectURL(url);
+      return;
+    }
     audio.pause();
     audio.removeAttribute("src");
     audio.load();
@@ -1236,9 +1258,28 @@ function ChatView({
 
   const prepareCallMicrophone = async () => {
     if (!navigator.mediaDevices?.getUserMedia) return;
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    stream.getTracks().forEach((track) => track.stop());
-    await new Promise((resolve) => globalThis.setTimeout(resolve, 220));
+    const current = callMicStreamRef.current;
+    if (current?.getAudioTracks().some((track) => track.readyState === "live")) return;
+    current?.getTracks().forEach((track) => track.stop());
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        channelCount: 1,
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+      },
+    });
+    callMicStreamRef.current = stream;
+    const track = stream.getAudioTracks()[0];
+    if (track) track.onended = () => {
+      if (callMicStreamRef.current !== stream) return;
+      callMicStreamRef.current = null;
+      if (callActiveRef.current) {
+        setCallStage("waiting");
+        setChatNotice("麦克风连接已结束，点“继续说”重新连接。");
+      }
+    };
+    await new Promise((resolve) => globalThis.setTimeout(resolve, 180));
   };
 
   const releaseCallSpeaker = async () => {
@@ -1262,16 +1303,24 @@ function ChatView({
     callLoopRef.current = true;
     let retryCount = 0;
     while (callActiveRef.current) {
+      const turnSequence = ++callTurnSequenceRef.current;
+      const claim: VoiceGenerationClaim = {
+        callId: callSessionIdRef.current,
+        turnId: `turn_${turnSequence}_${crypto.randomUUID()}`,
+        turnSequence,
+        generationId: `gen_${turnSequence}_${crypto.randomUUID()}`,
+      };
+      activeVoiceClaimRef.current = claim;
       try {
         await releaseCallSpeaker();
-        if (!callActiveRef.current) break;
+        if (!callActiveRef.current || !sameVoiceClaim(claim, activeVoiceClaimRef.current)) break;
         // iPhone 在扬声器播放后会把音频会话留在输出模式；每一轮都重新建立输入通道。
         await prepareCallMicrophone();
-        if (!callActiveRef.current) break;
+        if (!callActiveRef.current || !sameVoiceClaim(claim, activeVoiceClaimRef.current)) break;
         setCallStage("listening");
         setCallReply("");
         const said = await listenOnce();
-        if (!callActiveRef.current) break;
+        if (!callActiveRef.current || !sameVoiceClaim(claim, activeVoiceClaimRef.current)) break;
         setLiveTranscript("");
         if (!said) {
           await new Promise((resolve) => globalThis.setTimeout(resolve, 350));
@@ -1282,17 +1331,19 @@ function ChatView({
 
         setCallStage("thinking");
         const reply = await sendMessage(said, undefined, true);
-        if (!callActiveRef.current) break;
+        if (!callActiveRef.current || !sameVoiceClaim(claim, activeVoiceClaimRef.current)) break;
 
         if (reply) {
           callTurnsRef.current.push({ at: Date.now(), user: said, assistant: reply });
           const spokenReply = lastAssistantSpeechRef.current || reply;
           setCallReply(reply);      // 文字和语音同时出来
           setCallStage("speaking");
-          await speak(spokenReply, null);
+          await speak(spokenReply, null, claim);
+          if (!callActiveRef.current || !sameVoiceClaim(claim, activeVoiceClaimRef.current)) break;
           // 下一轮开头会统一释放扬声器并重新占用麦克风。
         }
       } catch (error) {
+        if (!sameVoiceClaim(claim, activeVoiceClaimRef.current)) continue;
         const message = error instanceof Error ? error.message : "语音识别暂时中断。";
         retryCount += 1;
         const needsGesture = /not-allowed|权限|麦克风|audio-capture/i.test(message);
@@ -1319,6 +1370,9 @@ function ChatView({
     setIncomingCall(null);
     setCallActive(true);
     callActiveRef.current = true;
+    callSessionIdRef.current = `call_${Date.now()}_${crypto.randomUUID()}`;
+    callTurnSequenceRef.current = 0;
+    activeVoiceClaimRef.current = null;
     callInitiatorRef.current = initiatedBy;
     callStartedAtRef.current = Date.now();
     callTurnsRef.current = [];
@@ -1345,11 +1399,15 @@ function ChatView({
   const endCall = () => {
     callActiveRef.current = false;
     callLoopRef.current = false;
+    activeVoiceClaimRef.current = null;
+    callSessionIdRef.current = "";
     setCallActive(false);
     setCallStage("idle");
     setCallReply("");
     recognitionRef.current?.abort();
     recognitionRef.current = null;
+    callMicStreamRef.current?.getTracks().forEach((track) => track.stop());
+    callMicStreamRef.current = null;
     stopAudio();
     globalThis.speechSynthesis?.cancel();
     callAudioRef.current?.pause();
@@ -1401,6 +1459,8 @@ function ChatView({
   useEffect(() => () => {
     callActiveRef.current = false;
     recognitionRef.current?.abort();
+    callMicStreamRef.current?.getTracks().forEach((track) => track.stop());
+    callMicStreamRef.current = null;
     if (audioRef.current) audioRef.current.pause();
     if (callAudioRef.current) callAudioRef.current.pause();
     globalThis.speechSynthesis?.cancel();

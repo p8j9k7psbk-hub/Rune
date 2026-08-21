@@ -953,7 +953,6 @@ function ChatView({
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const callAudioRef = useRef<HTMLAudioElement | null>(null);
-  const callMicStreamRef = useRef<MediaStream | null>(null);
   const callActiveRef = useRef(false);
   const callStartedAtRef = useRef(0);
   const callTurnsRef = useRef<VoiceCallTurn[]>([]);
@@ -1258,9 +1257,6 @@ function ChatView({
 
   const prepareCallMicrophone = async () => {
     if (!navigator.mediaDevices?.getUserMedia) return;
-    const current = callMicStreamRef.current;
-    if (current?.getAudioTracks().some((track) => track.readyState === "live")) return;
-    current?.getTracks().forEach((track) => track.stop());
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: {
         channelCount: 1,
@@ -1269,17 +1265,11 @@ function ChatView({
         autoGainControl: true,
       },
     });
-    callMicStreamRef.current = stream;
-    const track = stream.getAudioTracks()[0];
-    if (track) track.onended = () => {
-      if (callMicStreamRef.current !== stream) return;
-      callMicStreamRef.current = null;
-      if (callActiveRef.current) {
-        setCallStage("waiting");
-        setChatNotice("麦克风连接已结束，点“继续说”重新连接。");
-      }
-    };
-    await new Promise((resolve) => globalThis.setTimeout(resolve, 180));
+    // iPhone 的系统 SpeechRecognition 需要独占麦克风。getUserMedia 只负责
+    // 触发/确认权限，必须在 recognition.start() 前彻底释放，不能按自建 ASR
+    // 的方式把媒体流持续留着。
+    stream.getTracks().forEach((track) => track.stop());
+    await new Promise((resolve) => globalThis.setTimeout(resolve, 260));
   };
 
   const releaseCallSpeaker = async () => {
@@ -1406,8 +1396,6 @@ function ChatView({
     setCallReply("");
     recognitionRef.current?.abort();
     recognitionRef.current = null;
-    callMicStreamRef.current?.getTracks().forEach((track) => track.stop());
-    callMicStreamRef.current = null;
     stopAudio();
     globalThis.speechSynthesis?.cancel();
     callAudioRef.current?.pause();
@@ -1459,8 +1447,6 @@ function ChatView({
   useEffect(() => () => {
     callActiveRef.current = false;
     recognitionRef.current?.abort();
-    callMicStreamRef.current?.getTracks().forEach((track) => track.stop());
-    callMicStreamRef.current = null;
     if (audioRef.current) audioRef.current.pause();
     if (callAudioRef.current) callAudioRef.current.pause();
     globalThis.speechSynthesis?.cancel();

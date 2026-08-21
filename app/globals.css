@@ -257,6 +257,19 @@ h1 { font-family:var(--serif); font-weight:500; letter-spacing:-.035em; }
 .message-trace section > b em { color:#8d877f; font-size:8px; font-style:normal; font-weight:500; }
 .message-trace section > p,.message-trace pre { margin:5px 0 0; overflow:auto; color:#6f6961; font:8.5px/1.55 var(--sans); white-space:pre-wrap; word-break:break-word; }
 .message-usage { display:block; margin-top:5px; color:var(--muted); font-size:8px; opacity:.58; }
+.message-edit-button { display:block; margin:5px 0 -3px auto; padding:2px 1px; border:0; background:transparent; color:var(--muted); font-size:8px; cursor:pointer; opacity:.72; }
+.message-edit-form { width:min(300px,calc(100vw - 100px)); }
+.message-edit-form textarea { box-sizing:border-box; width:100%; min-height:72px; resize:vertical; padding:8px 9px; border:1px solid rgba(60,55,49,.15); border-radius:10px; outline:0; background:rgba(255,255,255,.72); color:var(--ink); font:11px/1.55 var(--sans); }
+.message-edit-form > div { display:flex; justify-content:flex-end; gap:6px; margin-top:6px; }
+.message-edit-form button { padding:5px 8px; border:1px solid rgba(60,55,49,.14); border-radius:8px; background:rgba(255,255,255,.72); color:var(--ink); font-size:9px; cursor:pointer; }
+.message-edit-form button:last-child { border-color:#d97757; background:#d97757; color:#fff; }
+.message-edit-form button:disabled { opacity:.38; cursor:default; }
+.previous-replies { width:min(330px,calc(100vw - 80px)); margin-top:8px; border:1px solid rgba(60,55,49,.11); border-radius:10px; background:rgba(118,118,128,.035); white-space:normal; }
+.previous-replies summary { padding:6px 8px; color:var(--muted); cursor:pointer; font-size:8.5px; }
+.previous-replies section { padding:8px; border-top:1px solid rgba(60,55,49,.08); }
+.previous-replies section small { display:block; margin-bottom:4px; color:var(--muted); font-size:8px; }
+.previous-replies section p { color:#6f6961; font-size:10px; line-height:1.6; white-space:pre-wrap; }
+.previous-replies section em { display:block; margin-top:4px; color:var(--muted); font-size:7.5px; font-style:normal; opacity:.65; }
 .sent-attachments { display:flex; flex-wrap:wrap; gap:5px; margin-bottom:6px; }
 .sent-attachments span { max-width:220px; overflow:hidden; padding:4px 7px; border-radius:7px; background:rgba(255,255,255,.55); font-size:9px; text-overflow:ellipsis; white-space:nowrap; }
 .action-confirm-card { margin-left:32px; padding:13px; border:1px solid rgba(217,119,87,.28); border-radius:15px; background:rgba(255,252,248,.9); box-shadow:0 7px 22px rgba(35,31,27,.06); }

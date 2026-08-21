@@ -91,6 +91,7 @@ test("keeps required AI, voice, and mobile behavior", async () => {
   assert.match(page, /turnSequence: number/);
   assert.match(page, /echoCancellation: true/);
   assert.match(page, /系统 SpeechRecognition 需要独占麦克风/);
+  assert.match(page, /需要新的用户手势/);
   assert.match(page, /编辑前记录/);
   assert.match(page, /\[\[split\]\]/);
   assert.match(page, /\[\[voice\]\]/);

@@ -1330,7 +1330,13 @@ function ChatView({
           setCallStage("speaking");
           await speak(spokenReply, null, claim);
           if (!callActiveRef.current || !sameVoiceClaim(claim, activeVoiceClaimRef.current)) break;
-          // 下一轮开头会统一释放扬声器并重新占用麦克风。
+          // iPhone/PWA 的系统 SpeechRecognition 在 TTS 播放后需要新的用户手势
+          // 才能可靠地重新占用麦克风。停在 waiting，由“继续说”启动下一轮；
+          // 否则界面会显示 listening，但系统实际没有把声音交给网页。
+          setCallStage("waiting");
+          setChatNotice("");
+          callLoopRef.current = false;
+          return;
         }
       } catch (error) {
         if (!sameVoiceClaim(claim, activeVoiceClaimRef.current)) continue;

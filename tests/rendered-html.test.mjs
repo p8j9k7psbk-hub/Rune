@@ -74,7 +74,9 @@ test("keeps required AI, voice, and mobile behavior", async () => {
   assert.match(page, /Rune Web Push/);
   assert.match(page, /发送测试通知/);
   assert.doesNotMatch(page, /Bark Device Key/);
-  assert.match(page, /语音通话记录/);
+  assert.match(page, /Duration:/);
+  assert.match(page, /旧语音通话/);
+  assert.match(page, /start_voice_call/);
   assert.match(page, /编辑前记录/);
   assert.match(page, /\[\[split\]\]/);
   assert.match(page, /\[\[voice\]\]/);

@@ -222,8 +222,16 @@ h1 { font-family:var(--serif); font-weight:500; letter-spacing:-.035em; }
 .claude-chat-header .history-button { font-size:14px; }
 .claude-chat-header .history-button.active { background:var(--accent); color:var(--accent-contrast); border-color:transparent; }
 
-/* 历史对话面板 */
-.chat-history { margin:10px 0 2px; border:1px solid var(--border); border-radius:16px; background:var(--surface); overflow:hidden; max-height:46vh; overflow-y:auto; }
+/* GPT / Claude 式历史抽屉 */
+.history-scrim { position:fixed; inset:0; z-index:38; border:0; background:rgba(28,26,23,.22); backdrop-filter:blur(2px); }
+.chat-history { position:fixed; z-index:40; top:max(18px,env(safe-area-inset-top)); bottom:82px; left:max(0px,calc(50% - 220px)); width:min(318px,84vw); display:flex; flex-direction:column; margin:0; border:1px solid var(--border); border-left:0; border-radius:0 22px 22px 0; background:rgba(250,249,245,.97); overflow:hidden; box-shadow:14px 0 40px rgba(35,31,27,.16); animation:history-in .22s ease both; }
+.chat-history > header { display:flex; align-items:center; justify-content:space-between; padding:17px 16px 12px; }
+.chat-history > header strong { font-family:var(--serif); font-size:20px; font-weight:600; }
+.chat-history > header button { width:29px; height:29px; border:0; border-radius:50%; background:rgba(118,118,128,.09); color:var(--ink); font-size:18px; cursor:pointer; }
+.history-new { display:flex; align-items:center; gap:8px; margin:0 12px 8px; padding:10px 11px; border:1px solid var(--border); border-radius:11px; background:var(--surface-strong); color:var(--ink); font-size:12px; text-align:left; cursor:pointer; }
+.history-new span { font-size:18px; line-height:1; }
+.history-list { min-height:0; flex:1; overflow-y:auto; overscroll-behavior:contain; }
+@keyframes history-in { from { opacity:0; transform:translateX(-18px); } to { opacity:1; transform:translateX(0); } }
 .history-empty { margin:0; padding:16px; color:var(--muted); font-size:11px; line-height:1.6; }
 .history-row { display:grid; grid-template-columns:1fr auto; align-items:center; }
 .history-row + .history-row { border-top:1px solid var(--border); }
@@ -232,7 +240,8 @@ h1 { font-family:var(--serif); font-weight:500; letter-spacing:-.035em; }
 .history-open strong { font-size:13px; font-weight:550; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:100%; }
 .history-open small { color:var(--muted); font-size:10px; }
 .history-delete { flex:none; width:30px; height:30px; margin-right:8px; border:0; border-radius:50%; background:transparent; color:var(--muted); font-size:16px; cursor:pointer; }
-.history-section-label { margin:0; padding:10px 13px 6px; border-top:1px solid var(--border); color:var(--muted); font-size:9px; letter-spacing:.04em; }
+.history-section-label { margin:0; padding:10px 13px 6px; color:var(--muted); font-size:9px; letter-spacing:.04em; }
+.history-section-label.legacy { margin-top:5px; border-top:1px solid var(--border); }
 .call-record + .call-record { border-top:1px solid var(--border); }
 .call-record > summary { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:10px 9px 10px 13px; cursor:pointer; list-style:none; }
 .call-record > summary::-webkit-details-marker { display:none; }
@@ -254,7 +263,7 @@ h1 { font-family:var(--serif); font-weight:500; letter-spacing:-.035em; }
 .claude-welcome h1 { margin:8px 0 0; font-family:var(--serif); font-size:27px; font-weight:500; letter-spacing:-.035em; }
 .claude-welcome p { max-width:270px; margin:0; color:var(--muted); font-size:11px; line-height:1.6; }
 .claude-welcome button { margin-top:6px; padding:9px 14px; border:1px solid var(--border); border-radius:10px; background:var(--surface-strong); color:var(--ink); cursor:pointer; }
-.claude-message { display:flex; gap:9px; font-size:12px; line-height:1.7; white-space:pre-wrap; }
+.claude-message { display:flex; gap:9px; font-family:var(--sans); font-size:12px; font-weight:400; line-height:1.7; white-space:pre-wrap; }
 .claude-message.user { justify-content:flex-end; }
 .claude-message p { margin:0; }
 .claude-message.user > div { max-width:84%; padding:10px 13px; border-radius:16px; background:rgba(118,118,128,.1); }
@@ -270,8 +279,9 @@ h1 { font-family:var(--serif); font-weight:500; letter-spacing:-.035em; }
 .message-trace section > p,.message-trace pre { margin:5px 0 0; overflow:auto; color:#6f6961; font:8.5px/1.55 var(--sans); white-space:pre-wrap; word-break:break-word; }
 .message-usage { display:block; margin-top:5px; color:var(--muted); font-size:8px; opacity:.58; }
 .message-edit-button { display:block; margin:5px 0 -3px auto; padding:2px 1px; border:0; background:transparent; color:var(--muted); font-size:8px; cursor:pointer; opacity:.72; }
-.message-edit-form { width:min(300px,calc(100vw - 100px)); }
-.message-edit-form textarea { box-sizing:border-box; width:100%; min-height:72px; resize:vertical; padding:8px 9px; border:1px solid rgba(60,55,49,.15); border-radius:10px; outline:0; background:rgba(255,255,255,.72); color:var(--ink); font:11px/1.55 var(--sans); }
+.claude-message.user.editing > div { width:min(330px,calc(100vw - 74px)); max-width:100%; padding:0; background:transparent; }
+.message-edit-form { box-sizing:border-box; width:100%; padding:9px; border:1px solid rgba(60,55,49,.12); border-radius:15px; background:rgba(118,118,128,.08); }
+.message-edit-form textarea { box-sizing:border-box; width:100%; min-height:82px; resize:vertical; padding:9px 10px; border:1px solid rgba(60,55,49,.15); border-radius:11px; outline:0; background:rgba(255,255,255,.78); color:var(--ink); font:400 16px/1.5 var(--sans); }
 .message-edit-form > div { display:flex; justify-content:flex-end; gap:6px; margin-top:6px; }
 .message-edit-form button { padding:5px 8px; border:1px solid rgba(60,55,49,.14); border-radius:8px; background:rgba(255,255,255,.72); color:var(--ink); font-size:9px; cursor:pointer; }
 .message-edit-form button:last-child { border-color:#d97757; background:#d97757; color:#fff; }
@@ -303,7 +313,7 @@ h1 { font-family:var(--serif); font-weight:500; letter-spacing:-.035em; }
 .attachment-tray > span { display:flex; align-items:center; gap:5px; max-width:220px; flex:none; padding:5px 7px; border-radius:8px; background:rgba(118,118,128,.1); font-size:9px; white-space:nowrap; }
 .attachment-tray > span button { width:17px; height:17px; padding:0; border:0; border-radius:50%; background:rgba(60,55,49,.12); color:var(--ink); cursor:pointer; line-height:1; }
 .composer-input-row { display:flex; align-items:flex-end; }
-.claude-composer textarea { flex:1; width:auto; min-height:34px; max-height:88px; resize:none; border:0; outline:0; padding:5px 4px 3px; background:transparent; color:#292621; font:12px/1.45 inherit; }
+.claude-composer textarea { flex:1; width:auto; min-height:34px; max-height:88px; resize:none; border:0; outline:0; padding:5px 4px 3px; background:transparent; color:#292621; font-family:var(--sans); font-size:16px; font-weight:400; line-height:1.45; }
 .claude-composer textarea::placeholder { color:#99938b; }
 .composer-tools { display:flex; align-items:center; gap:8px; margin-top:2px; }
 .composer-tools .send-button { flex:none; margin-left:auto; }
@@ -485,6 +495,34 @@ html[data-keyboard-open] .claude-composer { bottom:0; border-radius:17px 17px 0 
 .voice-transcript { margin:2px 0 0; font-size:12px; line-height:1.65; color:var(--ink); }
 .call-button { font-size:15px; display:grid; place-items:center; }
 
+/* 通话在消息流中只占一条，点开再看完整逐轮记录。 */
+.claude-message.call-entry > div { max-width:min(310px,82%); padding:0; background:transparent; }
+.call-message-card { min-width:210px; white-space:normal; }
+.call-message-card > summary { display:flex; align-items:center; justify-content:space-between; gap:18px; padding:12px 15px; border:1px solid color-mix(in srgb,var(--accent) 26%,var(--border)); border-radius:15px; background:color-mix(in srgb,var(--accent) 17%,var(--surface-strong)); color:var(--ink); cursor:pointer; list-style:none; font-size:14px; font-variant-numeric:tabular-nums; }
+.call-message-card > summary::-webkit-details-marker { display:none; }
+.call-message-card > summary svg { width:18px; height:18px; flex:none; }
+.call-message-transcript { margin-top:7px; overflow:hidden; border:1px solid var(--border); border-radius:13px; background:var(--surface); }
+.call-message-transcript > small { display:block; padding:9px 11px; color:var(--muted); font-size:9px; }
+.call-message-transcript section { padding:8px 11px; border-top:1px solid var(--border); }
+.call-message-transcript section p { display:grid; grid-template-columns:52px 1fr; gap:7px; margin:3px 0; font-size:10px; line-height:1.55; white-space:pre-wrap; }
+.call-message-transcript section b { overflow:hidden; color:var(--muted); font-size:9px; font-weight:500; text-overflow:ellipsis; white-space:nowrap; }
+.call-message-transcript > p { margin:0; padding:11px; color:var(--muted); font-size:10px; }
+
+/* iPhone 风格来电页：拒绝和接听是对称的红、绿圆形控制。 */
+.incoming-call-overlay { position:fixed; inset:0; z-index:65; display:flex; flex-direction:column; align-items:center; padding:clamp(84px,16vh,150px) 28px max(48px,env(safe-area-inset-bottom)); background:linear-gradient(180deg,color-mix(in srgb,var(--bg) 88%,#fff),color-mix(in srgb,var(--bg) 92%,#000)); color:var(--ink); animation:page-in .28s ease; }
+.incoming-call-avatar { width:112px; height:112px; display:grid; place-items:center; overflow:hidden; border:1px solid var(--border); border-radius:30px; background:var(--surface-strong); box-shadow:0 18px 44px rgba(35,31,27,.15); }
+.incoming-call-avatar img { width:100%; height:100%; object-fit:cover; }
+.incoming-call-avatar span { font-family:var(--serif); font-size:45px; }
+.incoming-call-overlay > p { margin:24px 0 5px; color:var(--muted); font-size:12px; }
+.incoming-call-overlay > strong { font-family:var(--serif); font-size:30px; font-weight:550; }
+.incoming-call-overlay > small { max-width:290px; margin-top:8px; color:var(--muted); font-size:11px; line-height:1.55; text-align:center; }
+.incoming-call-actions { width:min(280px,86vw); display:flex; justify-content:space-between; margin-top:auto; }
+.apple-call-button { width:76px; display:flex; flex-direction:column; align-items:center; gap:8px; padding:0; border:0; background:transparent; color:var(--ink); font:400 11px/1 var(--sans); cursor:pointer; }
+.apple-call-button svg { box-sizing:content-box; width:25px; height:25px; padding:17px; border-radius:50%; color:#fff; box-shadow:0 6px 18px rgba(0,0,0,.15); }
+.apple-call-button.decline svg { background:#ff3b30; }
+.apple-call-button.accept svg { background:#34c759; }
+.apple-call-button span { color:currentColor; }
+
 .call-overlay { position:fixed; inset:0; z-index:60; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:14px; padding:32px;
   background:color-mix(in srgb,var(--bg) 92%,#000); color:var(--ink); animation:page-in .3s ease; }
 .call-topline { position:absolute; top:max(24px,env(safe-area-inset-top)); left:50%; width:min(360px,calc(100% - 40px)); transform:translateX(-50%); display:flex; align-items:center; justify-content:space-between; color:var(--muted); font-size:11px; letter-spacing:.04em; }
@@ -532,7 +570,7 @@ html[data-keyboard-open] .claude-composer { bottom:0; border-radius:17px 17px 0 
 .call-stage.speaking { color:var(--accent); animation:mic-pulse 1.4s ease-in-out infinite; }
 .call-transcript { margin:0; min-height:40px; max-width:300px; text-align:center; font-size:13px; line-height:1.6; }
 .call-transcript.reply { color:var(--ink); font-size:14px; animation:page-in .3s ease; }
-.call-end { margin-top:10px; padding:12px 34px; border:0; border-radius:99px; background:#c0392b; color:#fff; font-size:14px; cursor:pointer; }
+.call-end { position:absolute; bottom:max(108px,calc(env(safe-area-inset-bottom) + 96px)); margin:0; }
 
 .instructions-input { width:100%; min-height:118px; resize:vertical; border:1px solid var(--border); border-radius:12px; padding:10px 11px; background:color-mix(in srgb,var(--ink) 4%,transparent); color:var(--ink); font:400 12px/1.6 var(--sans); }
 

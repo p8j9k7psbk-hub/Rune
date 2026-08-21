@@ -63,6 +63,9 @@ test("keeps required AI, voice, and mobile behavior", async () => {
   assert.match(page, /globalThis\.isSecureContext/);
   assert.match(page, /localStorage\.setItem\("rune-claude-key"/);
   assert.match(page, /localStorage\.setItem\(MINIMAX_KEY_STORAGE/);
+  assert.match(page, /indexedDB\.open\(RUNE_LOCAL_DB/);
+  assert.match(page, /loadConversations/);
+  assert.doesNotMatch(page, /已清掉.*最旧的对话/);
   assert.match(page, /const migrateValue =/);
   assert.match(page, /callMcpRpc/);
   assert.match(page, /"tools\/list"/);

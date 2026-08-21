@@ -160,7 +160,49 @@ type StoredConversation = { id: number; title: string; updatedAt: number; messag
 
 const CHAT_HISTORY_KEY = "rune-chat-history";
 const CALL_HISTORY_KEY = "rune-call-history";
-const MAX_CONVERSATIONS = 200;
+const RUNE_LOCAL_DB = "rune-local-data";
+const RUNE_LOCAL_STORE = "keyval";
+
+function openRuneLocalDb(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(RUNE_LOCAL_DB, 1);
+    request.onupgradeneeded = () => {
+      if (!request.result.objectStoreNames.contains(RUNE_LOCAL_STORE)) {
+        request.result.createObjectStore(RUNE_LOCAL_STORE);
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error || new Error("无法打开本地数据库"));
+  });
+}
+
+async function readLocalData<T>(key: string): Promise<T | undefined> {
+  const db = await openRuneLocalDb();
+  try {
+    return await new Promise<T | undefined>((resolve, reject) => {
+      const request = db.transaction(RUNE_LOCAL_STORE, "readonly").objectStore(RUNE_LOCAL_STORE).get(key);
+      request.onsuccess = () => resolve(request.result as T | undefined);
+      request.onerror = () => reject(request.error || new Error("读取本地数据库失败"));
+    });
+  } finally {
+    db.close();
+  }
+}
+
+async function writeLocalData<T>(key: string, value: T): Promise<void> {
+  const db = await openRuneLocalDb();
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const transaction = db.transaction(RUNE_LOCAL_STORE, "readwrite");
+      transaction.objectStore(RUNE_LOCAL_STORE).put(value, key);
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error || new Error("写入本地数据库失败"));
+      transaction.onabort = () => reject(transaction.error || new Error("写入本地数据库中止"));
+    });
+  } finally {
+    db.close();
+  }
+}
 
 function formatDuration(seconds: number) {
   const safe = Math.max(0, Math.floor(seconds));
@@ -168,9 +210,8 @@ function formatDuration(seconds: number) {
   return `${String(minutes).padStart(2, "0")}:${String(safe % 60).padStart(2, "0")}`;
 }
 
-// 附件里的图片是 base64，一张手机照片就有几 MB，而 localStorage 配额通常只有 5MB。
-// 所以不预先剥离，而是照常存；写不下时由 persistConversations 淘汰最旧的对话，
-// 实在存不下才退化成只保留文件名。这样近期对话能留住图片。
+// 附件里的图片是 base64，一张手机照片就可能有几 MB。聊天历史因此使用 IndexedDB，
+// 不再挤占 localStorage 的小配额；只有设备空间真的不足时才退化成只保存附件名称。
 function stripAttachmentData(messages: ChatMessage[]): ChatMessage[] {
   return messages.map((message) =>
     message.attachments?.length
@@ -179,30 +220,52 @@ function stripAttachmentData(messages: ChatMessage[]): ChatMessage[] {
   );
 }
 
-// 写入历史，超配额就从最旧的开始丢，直到写得下。
-function persistConversations(list: StoredConversation[]): { saved: StoredConversation[]; dropped: number } {
-  let working = list;
-  let dropped = 0;
-  for (;;) {
+let conversationWriteQueue = Promise.resolve();
+
+async function loadConversations(): Promise<StoredConversation[]> {
+  try {
+    const stored = await readLocalData<StoredConversation[]>(CHAT_HISTORY_KEY);
+    if (Array.isArray(stored)) return stored;
+  } catch {
+    // IndexedDB 不可用时继续读取旧 localStorage 数据。
+  }
+  try {
+    const legacy = JSON.parse(localStorage.getItem(CHAT_HISTORY_KEY) || "[]") as StoredConversation[];
+    if (!Array.isArray(legacy)) return [];
+    if (legacy.length) {
+      await writeLocalData(CHAT_HISTORY_KEY, legacy);
+      localStorage.removeItem(CHAT_HISTORY_KEY);
+    }
+    return legacy;
+  } catch {
+    return [];
+  }
+}
+
+function persistConversations(list: StoredConversation[]): Promise<"full" | "without-attachments" | "failed"> {
+  const snapshot = structuredClone(list);
+  const write = async () => {
     try {
-      localStorage.setItem(CHAT_HISTORY_KEY, JSON.stringify(working));
-      return { saved: working, dropped };
+      await writeLocalData(CHAT_HISTORY_KEY, snapshot);
+      localStorage.removeItem(CHAT_HISTORY_KEY);
+      return "full" as const;
     } catch {
-      if (working.length > 1) {
-        working = working.slice(0, -1);
-        dropped += 1;
-        continue;
-      }
-      // 只剩一条还写不下，说明附件太大：退化成只保留文件名
       try {
-        const lean = working.map((c) => ({ ...c, messages: stripAttachmentData(c.messages) }));
-        localStorage.setItem(CHAT_HISTORY_KEY, JSON.stringify(lean));
-        return { saved: lean, dropped };
+        const lean = snapshot.map((conversation) => ({
+          ...conversation,
+          messages: stripAttachmentData(conversation.messages),
+        }));
+        await writeLocalData(CHAT_HISTORY_KEY, lean);
+        localStorage.removeItem(CHAT_HISTORY_KEY);
+        return "without-attachments" as const;
       } catch {
-        return { saved: working, dropped };
+        return "failed" as const;
       }
     }
-  }
+  };
+  const queued = conversationWriteQueue.then(write, write);
+  conversationWriteQueue = queued.then(() => undefined, () => undefined);
+  return queued;
 }
 
 function conversationTitle(messages: ChatMessage[]) {
@@ -1321,14 +1384,14 @@ function ChatView({
 
   useEffect(() => {
     if (typeof globalThis.document === "undefined") return;
-    try {
-      const stored = JSON.parse(localStorage.getItem(CHAT_HISTORY_KEY) || "[]") as StoredConversation[];
-      if (Array.isArray(stored)) setConversations(stored);
-    } catch {
-      // 存储损坏就当没有历史，不影响使用
-    }
-    setActiveId(Date.now());
-    hydrated.current = true;
+    let cancelled = false;
+    void loadConversations().then((stored) => {
+      if (cancelled) return;
+      setConversations(stored);
+      setActiveId(Date.now());
+      hydrated.current = true;
+    });
+    return () => { cancelled = true; };
   }, []);
 
   // 当前对话每次变动都写回历史，切走或刷新都不会丢。
@@ -1347,19 +1410,19 @@ function ChatView({
         messages: snapshot,
       };
       const rest = previous.filter((c) => c.id !== activeId);
-      return [entry, ...rest].slice(0, MAX_CONVERSATIONS);
+      return [entry, ...rest];
     });
   }, [messages, activeId]);
 
   useEffect(() => {
     if (!hydrated.current) return;
-    const { saved, dropped } = persistConversations(conversations);
-    if (dropped > 0) {
-      // 已经淘汰掉的对话不能留在内存里，否则下次又会试着写一遍
-      setConversations(saved);
-      setChatNotice(`存储快满了，已清掉 ${dropped} 段最旧的对话。`);
-      globalThis.setTimeout(() => setChatNotice(""), 3000);
-    }
+    void persistConversations(conversations).then((result) => {
+      if (result === "full") return;
+      setChatNotice(result === "without-attachments"
+        ? "设备空间不足：对话已保存，较早附件只保留名称。"
+        : "这次对话暂时没能写入本地，请检查 Safari 可用空间。");
+      globalThis.setTimeout(() => setChatNotice(""), 4000);
+    });
   }, [conversations]);
 
   const openConversation = (id: number) => {

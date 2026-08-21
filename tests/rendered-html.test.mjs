@@ -83,6 +83,8 @@ test("keeps required AI, voice, and mobile behavior", async () => {
   assert.match(page, /directCallRequested/);
   assert.match(page, /releaseCallSpeaker/);
   assert.match(page, /继续说/);
+  assert.match(page, /audio\.ontimeupdate/);
+  assert.match(page, /每一轮都重新建立输入通道/);
   assert.match(page, /编辑前记录/);
   assert.match(page, /\[\[split\]\]/);
   assert.match(page, /\[\[voice\]\]/);

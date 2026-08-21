@@ -1040,8 +1040,16 @@ function ChatView({
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.lang = "zh-CN";
     utterance.rate = Math.max(.7, Math.min(1.35, voiceConfig.speed || 1));
-    utterance.onend = () => resolve();
-    utterance.onerror = () => resolve();
+    let settled = false;
+    const timer = globalThis.setTimeout(() => finish(), Math.max(8000, Math.min(60000, text.length * 650)));
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      globalThis.clearTimeout(timer);
+      resolve();
+    };
+    utterance.onend = finish;
+    utterance.onerror = finish;
     speechSynthesis.cancel();
     speechSynthesis.speak(utterance);
   });
@@ -1070,9 +1078,21 @@ function ChatView({
     setSpeakingIndex(index);
     let blocked = false;
     await new Promise<void>((resolve) => {
-      audio.onended = () => resolve();
-      audio.onerror = () => resolve();
-      audio.play().catch(() => { blocked = true; resolve(); });
+      let settled = false;
+      const timer = globalThis.setTimeout(() => finish(), Math.max(12000, Math.min(90000, text.length * 800)));
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        globalThis.clearTimeout(timer);
+        resolve();
+      };
+      audio.onended = finish;
+      audio.onerror = finish;
+      // iOS/PWA 偶尔播放完却不派发 ended；播放进度到末尾时也结束本轮。
+      audio.ontimeupdate = () => {
+        if (Number.isFinite(audio.duration) && audio.duration > 0 && audio.currentTime >= audio.duration - .18) finish();
+      };
+      audio.play().catch(() => { blocked = true; finish(); });
     });
     audio.pause();
     audio.removeAttribute("src");
@@ -1224,8 +1244,12 @@ function ChatView({
   const releaseCallSpeaker = async () => {
     globalThis.speechSynthesis?.cancel();
     const audio = callAudioRef.current;
+    callAudioRef.current = null;
     if (audio) {
       audio.pause();
+      audio.onended = null;
+      audio.onerror = null;
+      audio.ontimeupdate = null;
       audio.removeAttribute("src");
       audio.load();
     }
@@ -1241,6 +1265,9 @@ function ChatView({
     while (callActiveRef.current) {
       try {
         await releaseCallSpeaker();
+        if (!callActiveRef.current) break;
+        // iPhone 在扬声器播放后会把音频会话留在输出模式；每一轮都重新建立输入通道。
+        await prepareCallMicrophone();
         if (!callActiveRef.current) break;
         setCallStage("listening");
         setCallReply("");
@@ -1269,7 +1296,8 @@ function ChatView({
       } catch (error) {
         const message = error instanceof Error ? error.message : "语音识别暂时中断。";
         retryCount += 1;
-        if (retryCount >= 4) {
+        const needsGesture = /not-allowed|权限|麦克风|audio-capture/i.test(message);
+        if (needsGesture || retryCount >= 4) {
           setCallStage("waiting");
           setChatNotice(`${message} 点“继续说”可以重新连接麦克风。`);
           callLoopRef.current = false;

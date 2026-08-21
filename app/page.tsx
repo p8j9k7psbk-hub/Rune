@@ -861,7 +861,9 @@ function ChatView({
   const stopAudio = () => {
     if (audioRef.current) {
       audioRef.current.pause();
-      if (audioRef.current.src.startsWith("blob:")) URL.revokeObjectURL(audioRef.current.src);
+      const source = audioRef.current.currentSrc || audioRef.current.src;
+      const belongsToCachedClip = Object.values(clipsRef.current).some((clip) => clip.url === source);
+      if (source.startsWith("blob:") && !belongsToCachedClip) URL.revokeObjectURL(source);
       audioRef.current = null;
     }
     setSpeakingIndex(null);
@@ -914,8 +916,8 @@ function ChatView({
     audioRef.current = audio;
     setSpeakingIndex(index);
     audio.onended = () => { if (audioRef.current === audio) audioRef.current = null; setSpeakingIndex(null); };
-    audio.onerror = () => { setSpeakingIndex(null); };
-    audio.play().catch(() => setSpeakingIndex(null));
+    audio.onerror = () => { setSpeakingIndex(null); setChatNotice("这条语音暂时无法播放，请再点一次。"); };
+    audio.play().catch(() => { setSpeakingIndex(null); setChatNotice("iPhone 暂时阻止了播放，请再点一次语音条。"); globalThis.setTimeout(() => setChatNotice(""), 2600); });
   };
 
   const toggleVoiceMessage = async (index: number, text: string) => {
@@ -1100,6 +1102,7 @@ function ChatView({
     callActiveRef.current = false;
     recognitionRef.current?.abort();
     if (audioRef.current) audioRef.current.pause();
+    Object.values(clipsRef.current).forEach((clip) => { if (clip.url.startsWith("blob:")) URL.revokeObjectURL(clip.url); });
   }, []);
 
   const selectedModel = claudeModels.find((model) => model.id === claudeModel);

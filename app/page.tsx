@@ -1244,7 +1244,6 @@ function ChatView({
   const releaseCallSpeaker = async () => {
     globalThis.speechSynthesis?.cancel();
     const audio = callAudioRef.current;
-    callAudioRef.current = null;
     if (audio) {
       audio.pause();
       audio.onended = null;
@@ -1640,6 +1639,7 @@ function ChatView({
         { name: "create_reminder", description: "创建 Rune 定时提醒、闹铃或模拟来电。根据用户意图选择 mode，并编辑自然的标题与正文。", input_schema: { type: "object", properties: { mode: { type: "string", enum: ["reminder", "alarm", "call"], description: "普通提醒、持续响铃闹钟、或 Rune 模拟来电" }, title: { type: "string", description: "简短通知标题" }, content: { type: "string", description: "由你编辑的通知正文" }, datetime: { type: "string", description: "带时区的 ISO 8601 时间" } }, required: ["mode", "title", "content", "datetime"] } },
         { name: "start_voice_call", description: "立刻向用户发起 Rune 页面内的实时语音来电。当用户说‘给我打个电话’、‘现在语音通话’时必须调用；你自己真心希望听见用户声音时也可以主动调用。不要把普通语音条当作电话。", input_schema: { type: "object", properties: { reason: { type: "string", description: "一句简短自然、会显示在来电页上的原因" } }, required: ["reason"] } },
       ];
+      const runeActionNames = ["add_todo", "write_diary", "set_home_message", "create_reminder", "start_voice_call"];
       const apiBase = normalizeAiApiBase(aiApiBase);
       const protocol = apiProtocolFor(apiBase);
       const mcpToolMap = new Map<string, { server: McpServer; tool: McpTool; sessionId?: string }>();
@@ -1714,14 +1714,30 @@ ${voiceReady ? "你可以同时发送文字和语音：正常文字直接写；�
         : { input: Number(data.usage?.prompt_tokens || 0), output: Number(data.usage?.completion_tokens || 0), total: Number(data.usage?.total_tokens || 0) };
       const toolTraces: ToolTrace[] = [];
       let reasoning = "";
+      let openAiRuneCalls: Array<{ id: string; function: { name: RuneAction["name"]; arguments?: string } }> = [];
       if (protocol === "openai") {
         const assistantMessage = data.choices?.[0]?.message;
         reasoning = String(assistantMessage?.reasoning_content || assistantMessage?.reasoning || "").trim();
-        const externalCalls = (assistantMessage?.tool_calls || []).filter((call: { function?: { name?: string } }) => mcpToolMap.has(call.function?.name || ""));
+        const allToolCalls = assistantMessage?.tool_calls || [];
+        openAiRuneCalls = allToolCalls.filter((call: { function?: { name?: string } }) => runeActionNames.includes(call.function?.name || ""));
+        const externalCalls = allToolCalls.filter((call: { function?: { name?: string } }) => mcpToolMap.has(call.function?.name || ""));
         if (externalCalls.length) {
           const toolResults = [];
-          for (const call of externalCalls) {
-            const mapped = mcpToolMap.get(call.function.name)!;
+          // OpenAI-compatible APIs require one tool response for every tool_call_id in the
+          // assistant message. Rune 本地工具也必须回一条占位结果，不能只回复 MCP 调用。
+          for (const call of allToolCalls) {
+            const mapped = mcpToolMap.get(call.function.name);
+            if (!mapped) {
+              const accepted = runeActionNames.includes(call.function.name);
+              toolResults.push({
+                role: "tool",
+                tool_call_id: call.id,
+                content: JSON.stringify(accepted
+                  ? { status: "accepted", message: "Rune will handle this local tool call." }
+                  : { status: "error", message: "Unknown tool." }),
+              });
+              continue;
+            }
             let args: Record<string, unknown> = {};
             try { args = JSON.parse(call.function.arguments || "{}"); } catch { args = {}; }
             try {
@@ -1746,6 +1762,8 @@ ${voiceReady ? "你可以同时发送文字和语音：正常文字直接写；�
           usage.total = usage.input + usage.output;
           const followupMessage = data.choices?.[0]?.message;
           reasoning = String(followupMessage?.reasoning_content || followupMessage?.reasoning || reasoning).trim();
+          const followupRuneCalls = (followupMessage?.tool_calls || []).filter((call: { function?: { name?: string } }) => runeActionNames.includes(call.function?.name || ""));
+          openAiRuneCalls = [...openAiRuneCalls, ...followupRuneCalls.filter((call: { id?: string }) => !openAiRuneCalls.some((existing) => existing.id === call.id))];
         }
       } else {
         reasoning = (data.content || []).filter((block: { type?: string }) => block.type === "thinking" || block.type === "reasoning").map((block: { thinking?: string; text?: string; summary?: string }) => block.thinking || block.summary || block.text || "").filter(Boolean).join("\n").trim();
@@ -1760,10 +1778,9 @@ ${voiceReady ? "你可以同时发送文字和语音：正常文字直接写；�
       const reply = protocol === "anthropic"
         ? (data.content || []).filter((block: { type: string }) => block.type === "text").map((block: { text: string }) => block.text).join("\n")
         : String(data.choices?.[0]?.message?.content || "");
-      const runeActionNames = ["add_todo", "write_diary", "set_home_message", "create_reminder", "start_voice_call"];
       const proposed = protocol === "anthropic"
         ? (data.content || []).filter((block: { type: string; name?: string }) => block.type === "tool_use" && runeActionNames.includes(block.name || "")).map((block: { id: string; name: RuneAction["name"]; input: Record<string, string> }) => ({ id: block.id, name: block.name, input: block.input, status: "pending" as const }))
-        : (data.choices?.[0]?.message?.tool_calls || []).filter((call: { function?: { name?: string } }) => runeActionNames.includes(call.function?.name || "")).map((call: { id: string; function: { name: RuneAction["name"]; arguments?: string } }) => {
+        : openAiRuneCalls.map((call) => {
             let input: Record<string, string> = {};
             try { input = JSON.parse(call.function.arguments || "{}"); } catch { input = {}; }
             return { id: call.id, name: call.function.name, input, status: "pending" as const };

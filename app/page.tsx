@@ -1758,7 +1758,23 @@ ${voiceReady ? "你可以同时发送文字和语音：正常文字直接写；�
       const endpoint = protocol === "anthropic" ? `${apiBase}/messages` : `${apiBase}/chat/completions`;
       const openAiMessages = [
         { role: "system", content: systemPrompt },
-        ...nextMessages.map((message) => ({ role: message.role, content: [message.text, message.voiceText].filter(Boolean).join("\n") || "（含附件的消息）" })),
+        ...nextMessages.map((message) => {
+          const plainText = [message.text, message.voiceText].filter(Boolean).join("\n");
+          if (message.role === "assistant" || !message.attachments?.length) {
+            return { role: message.role, content: plainText || "（空消息）" };
+          }
+          return {
+            role: message.role,
+            content: [
+              ...(message.attachments || []).map((attachment) => !attachment.data
+                ? { type: "text", text: `附件「${attachment.name}」的内容未保留在历史记录中，无法读取。` }
+                : attachment.kind === "image"
+                  ? { type: "image_url", image_url: { url: `data:${attachment.mediaType || "image/jpeg"};base64,${attachment.data}`, detail: "auto" } }
+                  : { type: "text", text: `附件「${attachment.name}」内容：\n${attachment.data}` }),
+              { type: "text", text: plainText || "请查看我发送的附件。" },
+            ],
+          };
+        }),
       ];
       const openAiTools = [
         ...runeTools.map((tool) => ({ type: "function", function: { name: tool.name, description: tool.description, parameters: tool.input_schema } })),

@@ -95,6 +95,8 @@ test("keeps required AI, voice, and mobile behavior", async () => {
   assert.match(page, /编辑前记录/);
   assert.match(page, /\[\[split\]\]/);
   assert.match(page, /\[\[voice\]\]/);
+  assert.match(page, /type: "image_url", image_url: \{ url: `data:\$\{attachment\.mediaType/);
+  assert.match(page, /请查看我发送的附件/);
   assert.match(page, /麦克风权限/);
   assert.match(page, /ElevenLabs.*MiniMax|MiniMax.*ElevenLabs/s);
   assert.match(page, /xi-api-key/);

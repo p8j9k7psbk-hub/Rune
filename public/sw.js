@@ -1,6 +1,13 @@
 self.addEventListener("install", () => self.skipWaiting());
 self.addEventListener("activate", (event) => event.waitUntil(self.clients.claim()));
 
+// 主屏幕 PWA 的页面导航必须优先取网络；否则 iOS 可能继续打开旧 index.html，
+// 进而一直引用旧的带 hash 脚本，看起来像“已经部署但永远不更新”。
+self.addEventListener("fetch", (event) => {
+  if (event.request.mode !== "navigate") return;
+  event.respondWith(fetch(event.request, { cache: "no-store" }));
+});
+
 const PROFILE_CACHE = "rune-notification-profile-v1";
 const PROFILE_URL = new URL("./notification-profile.json", self.registration.scope).href;
 const AVATAR_URL = new URL("./notification-avatar", self.registration.scope).href;

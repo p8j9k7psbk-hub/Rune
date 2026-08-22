@@ -67,6 +67,39 @@ async function readAvatar(file: File): Promise<string> {
   }
 }
 
+async function readChatImage(file: File): Promise<{ mediaType: string; data: string }> {
+  const dataUrl = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+  try {
+    const image = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const element = new Image();
+      element.onload = () => resolve(element);
+      element.onerror = () => reject(new Error("照片格式无法解码"));
+      element.src = dataUrl;
+    });
+    const maxSide = 1800;
+    const ratio = Math.min(1, maxSide / Math.max(image.naturalWidth, image.naturalHeight));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(image.naturalWidth * ratio));
+    canvas.height = Math.max(1, Math.round(image.naturalHeight * ratio));
+    const context = canvas.getContext("2d");
+    if (!context) throw new Error("浏览器无法处理图片");
+    context.drawImage(image, 0, 0, canvas.width, canvas.height);
+    const normalized = canvas.toDataURL("image/jpeg", 0.86);
+    return { mediaType: "image/jpeg", data: normalized.split(",")[1] || "" };
+  } catch (error) {
+    const rawType = file.type.toLowerCase();
+    if (/^image\/(jpeg|jpg|png|webp|gif)$/.test(rawType)) {
+      return { mediaType: rawType === "image/jpg" ? "image/jpeg" : rawType, data: dataUrl.split(",")[1] || "" };
+    }
+    throw error;
+  }
+}
+
 function initialOf(name: string, fallback: string) {
   return (name.trim() || fallback).slice(0, 1);
 }
@@ -220,16 +253,6 @@ function sameVoiceClaim(left: VoiceGenerationClaim | null, right: VoiceGeneratio
     && left.generationId === right.generationId);
 }
 
-// 附件里的图片是 base64，一张手机照片就可能有几 MB。聊天历史因此使用 IndexedDB，
-// 不再挤占 localStorage 的小配额；只有设备空间真的不足时才退化成只保存附件名称。
-function stripAttachmentData(messages: ChatMessage[]): ChatMessage[] {
-  return messages.map((message) =>
-    message.attachments?.length
-      ? { ...message, attachments: message.attachments.map((a) => ({ ...a, data: "" })) }
-      : message,
-  );
-}
-
 let conversationWriteQueue = Promise.resolve();
 
 async function loadConversations(): Promise<StoredConversation[]> {
@@ -252,7 +275,7 @@ async function loadConversations(): Promise<StoredConversation[]> {
   }
 }
 
-function persistConversations(list: StoredConversation[]): Promise<"full" | "without-attachments" | "failed"> {
+function persistConversations(list: StoredConversation[]): Promise<"full" | "failed"> {
   const snapshot = structuredClone(list);
   const write = async () => {
     try {
@@ -260,17 +283,9 @@ function persistConversations(list: StoredConversation[]): Promise<"full" | "wit
       localStorage.removeItem(CHAT_HISTORY_KEY);
       return "full" as const;
     } catch {
-      try {
-        const lean = snapshot.map((conversation) => ({
-          ...conversation,
-          messages: stripAttachmentData(conversation.messages),
-        }));
-        await writeLocalData(CHAT_HISTORY_KEY, lean);
-        localStorage.removeItem(CHAT_HISTORY_KEY);
-        return "without-attachments" as const;
-      } catch {
-        return "failed" as const;
-      }
+      // 不能为了写入新记录而覆盖数据库、清空旧图片。写入失败时保留上一次
+      // 完整快照，并提示用户释放空间；新图片已在读取时压缩，正常不会走到这里。
+      return "failed" as const;
     }
   };
   const queued = conversationWriteQueue.then(write, write);
@@ -1541,9 +1556,7 @@ function ChatView({
     if (!hydrated.current) return;
     void persistConversations(conversations).then((result) => {
       if (result === "full") return;
-      setChatNotice(result === "without-attachments"
-        ? "设备空间不足：对话已保存，较早附件只保留名称。"
-        : "这次对话暂时没能写入本地，请检查 Safari 可用空间。");
+      setChatNotice("这次对话暂时没能写入本地；旧聊天和旧图片仍保持不变。请检查 Safari 可用空间。");
       globalThis.setTimeout(() => setChatNotice(""), 4000);
     });
   }, [conversations]);
@@ -1600,18 +1613,19 @@ function ChatView({
     if (!files?.length) return;
     const accepted: ChatAttachment[] = [];
     for (const file of Array.from(files)) {
-      if (file.size > 5 * 1024 * 1024) {
-        setChatNotice(`${file.name} 超过 5MB，暂时不能添加。`);
+      const looksLikeImage = file.type.startsWith("image/") || /\.(?:jpe?g|png|webp|gif|heic|heif)$/i.test(file.name);
+      const sizeLimit = looksLikeImage ? 25 : 5;
+      if (file.size > sizeLimit * 1024 * 1024) {
+        setChatNotice(`${file.name} 超过 ${sizeLimit}MB，暂时不能添加。`);
         continue;
       }
-      if (file.type.startsWith("image/")) {
-        const dataUrl = await new Promise<string>((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload = () => resolve(String(reader.result));
-          reader.onerror = () => reject(reader.error);
-          reader.readAsDataURL(file);
-        });
-        accepted.push({ id: Date.now() + accepted.length, name: file.name, kind: "image", mediaType: file.type, data: dataUrl.split(",")[1] || "" });
+      if (looksLikeImage) {
+        try {
+          const normalized = await readChatImage(file);
+          accepted.push({ id: Date.now() + accepted.length, name: file.name, kind: "image", ...normalized });
+        } catch {
+          setChatNotice(`${file.name} 无法转换成可读取图片。请在 iPhone 相机设置中选择“格式 → 兼容性最佳”，或先导出为 JPG。`);
+        }
       } else {
         accepted.push({ id: Date.now() + accepted.length, name: file.name, kind: "text", mediaType: file.type || "text/plain", data: await file.text() });
       }
@@ -2918,6 +2932,21 @@ export default function Pulse() {
       globalThis.clearTimeout(leaveTimer);
       globalThis.clearTimeout(hideTimer);
     };
+  }, []);
+
+  useEffect(() => {
+    if (!("serviceWorker" in navigator)) return;
+    let refreshing = false;
+    const reloadForFreshWorker = () => {
+      if (refreshing) return;
+      refreshing = true;
+      location.reload();
+    };
+    navigator.serviceWorker.addEventListener("controllerchange", reloadForFreshWorker);
+    navigator.serviceWorker.register("./sw.js", { updateViaCache: "none" })
+      .then((registration) => registration.update())
+      .catch(() => undefined);
+    return () => navigator.serviceWorker.removeEventListener("controllerchange", reloadForFreshWorker);
   }, []);
 
   useEffect(() => {

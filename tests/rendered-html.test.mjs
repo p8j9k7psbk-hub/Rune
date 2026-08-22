@@ -104,9 +104,6 @@ test("keeps required AI, voice, and mobile behavior", async () => {
   assert.match(globalsCss, /\.sent-image img/);
   assert.match(page, /async function readChatImage/);
   assert.match(page, /heic\|heif/);
-  assert.match(page, /serviceWorker\.addEventListener\("controllerchange"/);
-  assert.match(serviceWorker, /event\.request\.mode !== "navigate"/);
-  assert.match(serviceWorker, /cache: "no-store"/);
   assert.match(page, /麦克风权限/);
   assert.match(page, /ElevenLabs.*MiniMax|MiniMax.*ElevenLabs/s);
   assert.match(page, /xi-api-key/);

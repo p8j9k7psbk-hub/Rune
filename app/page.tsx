@@ -2935,21 +2935,6 @@ export default function Pulse() {
   }, []);
 
   useEffect(() => {
-    if (!("serviceWorker" in navigator)) return;
-    let refreshing = false;
-    const reloadForFreshWorker = () => {
-      if (refreshing) return;
-      refreshing = true;
-      location.reload();
-    };
-    navigator.serviceWorker.addEventListener("controllerchange", reloadForFreshWorker);
-    navigator.serviceWorker.register("./sw.js", { updateViaCache: "none" })
-      .then((registration) => registration.update())
-      .catch(() => undefined);
-    return () => navigator.serviceWorker.removeEventListener("controllerchange", reloadForFreshWorker);
-  }, []);
-
-  useEffect(() => {
     if (typeof window === "undefined" || !window.visualViewport) return;
     const viewport = window.visualViewport;
     let layoutHeight = Math.max(window.innerHeight, viewport.height);

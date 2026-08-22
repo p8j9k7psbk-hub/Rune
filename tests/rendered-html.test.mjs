@@ -40,9 +40,10 @@ test("server-renders the Rune home page", async () => {
 });
 
 test("keeps required AI, voice, and mobile behavior", async () => {
-  const [page, mobileCss, entryHtml] = await Promise.all([
+  const [page, mobileCss, globalsCss, entryHtml] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/mobile-fixes.css", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
     readFile(new URL("../static-index.html", import.meta.url), "utf8"),
   ]);
   assert.match(page, /userName:\s*"user"/);
@@ -97,6 +98,9 @@ test("keeps required AI, voice, and mobile behavior", async () => {
   assert.match(page, /\[\[voice\]\]/);
   assert.match(page, /type: "image_url", image_url: \{ url: `data:\$\{attachment\.mediaType/);
   assert.match(page, /请查看我发送的附件/);
+  assert.match(page, /className="sent-image"/);
+  assert.match(page, /className=\{attachment\.kind === "image" \? "pending-attachment image"/);
+  assert.match(globalsCss, /\.sent-image img/);
   assert.match(page, /麦克风权限/);
   assert.match(page, /ElevenLabs.*MiniMax|MiniMax.*ElevenLabs/s);
   assert.match(page, /xi-api-key/);

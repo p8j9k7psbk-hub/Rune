@@ -2064,7 +2064,19 @@ ${voiceReady ? "你可以同时发送文字和语音：正常文字直接写；�
             <div>
               {/* 自己发的消息不显示昵称，头像已经足够区分 */}
               {message.role === "assistant" && <span className="msg-name">{profile.name || "Rune"}</span>}
-              {!!message.attachments?.length && <div className="sent-attachments">{message.attachments.map((attachment) => <span key={attachment.id}>{attachment.kind === "image" ? "▧" : "≡"} {attachment.name}</span>)}</div>}
+              {!!message.attachments?.length && <div className="sent-attachments">
+                {message.attachments.map((attachment) => attachment.kind === "image" && attachment.data ? (
+                  <a className="sent-image" key={attachment.id} href={`data:${attachment.mediaType || "image/jpeg"};base64,${attachment.data}`} target="_blank" rel="noreferrer" aria-label={`查看图片 ${attachment.name}`}>
+                    <img src={`data:${attachment.mediaType || "image/jpeg"};base64,${attachment.data}`} alt={attachment.name} />
+                    <small>{attachment.name}</small>
+                  </a>
+                ) : (
+                  <div className={`sent-file${attachment.data ? "" : " unavailable"}`} key={attachment.id}>
+                    <span aria-hidden="true">≡</span>
+                    <p><strong>{attachment.name}</strong><small>{attachment.data ? attachment.data.replace(/\s+/g, " ").slice(0, 90) : "附件内容未保留"}</small></p>
+                  </div>
+                ))}
+              </div>}
               {message.callRecord ? (
                 <details className="call-message-card">
                   <summary><span>Duration: {formatDuration(message.callRecord.duration)}</span><PhoneIcon /></summary>
@@ -2170,7 +2182,15 @@ ${voiceReady ? "你可以同时发送文字和语音：正常文字直接写；�
       </section>
 
       <div className="claude-composer">
-        {!!attachments.length && <div className="attachment-tray">{attachments.map((attachment) => <span key={attachment.id}>{attachment.kind === "image" ? "▧" : "≡"} {attachment.name}<button onClick={() => setAttachments(attachments.filter((item) => item.id !== attachment.id))} aria-label={`移除 ${attachment.name}`}>×</button></span>)}</div>}
+        {!!attachments.length && <div className="attachment-tray">{attachments.map((attachment) => (
+          <div className={attachment.kind === "image" ? "pending-attachment image" : "pending-attachment file"} key={attachment.id}>
+            {attachment.kind === "image" && attachment.data
+              ? <img src={`data:${attachment.mediaType || "image/jpeg"};base64,${attachment.data}`} alt="" />
+              : <span aria-hidden="true">≡</span>}
+            <small>{attachment.name}</small>
+            <button onClick={() => setAttachments(attachments.filter((item) => item.id !== attachment.id))} aria-label={`移除 ${attachment.name}`}>×</button>
+          </div>
+        ))}</div>}
         <div className="composer-input-row"><textarea
           value={input}
           onChange={(event) => setInput(event.target.value)}
